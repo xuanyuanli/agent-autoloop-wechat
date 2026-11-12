@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAnswer, renderCard, splitText } from "../src/card-text.ts";
+import { parseAnswer, renderCard, splitText, waitingForChoice } from "../src/card-text.ts";
 
 test("an open ask lists options and marks the recommendation", () => {
   const text = renderCard({
@@ -15,11 +15,30 @@ test("an open ask lists options and marks the recommendation", () => {
     answer: null,
     result: null,
   });
-  assert.match(text, /#3 选一个颜色/);
+  assert.equal(text.startsWith("**选一个颜色**\n\n选哪个都行。"), true);
+  assert.equal(text.startsWith("#"), false);
   assert.match(text, /2\. 绿色（推荐）/);
-  assert.match(text, /回复规则/);
-  assert.match(text, /#3 2 超时只改测试环境/);
-  assert.match(text, /2 超时只改测试环境，以及其他句子/);
+  assert.match(text, /---\n\n\*\*怎么回复\*\*/);
+  assert.match(text, /纯数字：`1`/);
+  assert.match(text, /`#3 2`/);
+  assert.match(text, /`#3 2 超时只改测试环境`/);
+});
+
+test("a recorded choice says the background task is still running", () => {
+  const card = {
+    id: 8,
+    kind: "ask" as const,
+    state: "decided" as const,
+    title: "选一个颜色",
+    text: "选一个就行。",
+    options: ["蓝色", "绿色"],
+    recommend: 0,
+    choice: 1,
+    answer: null,
+    result: null,
+  };
+  assert.equal(waitingForChoice(card), "你选了「绿色」，后台任务执行中，请等待");
+  assert.match(renderCard(card), /你选了「绿色」，后台任务执行中，请等待/);
 });
 
 test("a plain reply has no card number and no label", () => {

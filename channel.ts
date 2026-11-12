@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createClient } from "./src/api.ts";
-import { renderCard, splitText, type CardView } from "./src/card-text.ts";
+import { renderCard, splitText, waitingForChoice, type CardView } from "./src/card-text.ts";
 import { CHAT_RULE } from "./src/chat-session.ts";
 import { applyPage, trackDelivery } from "./src/page.ts";
 import { readSession, sessionPath, writeSession, type StoredSession } from "./src/session.ts";
@@ -303,9 +303,8 @@ function sourceCredentials(options: Record<string, unknown>) {
 }
 
 function followUp(card: Card) {
-  const chosen = card.choice === null ? card.answer : card.options[card.choice];
-  if (card.state === "decided") return chosen ? `#${card.id} 已记录：你选了「${chosen}」。` : `#${card.id} 已记录。`;
-  if (card.state === "done") return `#${card.id} 已执行${card.result ? `：${card.result}` : "。"}`;
-  if (card.state === "closed" && card.result) return `#${card.id} ${card.result}`;
+  if (card.state === "decided") return waitingForChoice(card);
+  if (card.state === "done") return `已执行${card.result ? `：${card.result}` : "。"}`;
+  if (card.state === "closed" && card.result) return card.result;
   return "";
 }

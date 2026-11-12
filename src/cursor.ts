@@ -47,11 +47,24 @@ let pendingChat: { dir: string; at: number; home: string } | null = null;
 
 const PLACEHOLDER = /\{(prompt|model|effort|cwd|context)\}/g;
 
+const INSPECTION_RULE = "工作日运维巡检";
+const OFFDAY_LINE = "今天是非工作日（周末或法定假日），跳过今日巡检";
+
+/** The framework ending tells every run to write 没事可做. That outcome is not pushed, so the inspection must say otherwise last. */
+function spokenPrompt(prompt: string) {
+  if (!prompt.includes(`规则「${INSPECTION_RULE}」`)) return prompt;
+  return (
+    `${prompt}\n\n` +
+    "上面若写了「看过了，没有要做的：写没事可做」，本规则不采用。" +
+    `非工作日跳过时，第一行必须是「${OFFDAY_LINE}」，不要以「没事可做」或「没跑成」开头，不附回执。`
+  );
+}
+
 export function commandLine(turn: Turn, clock: Clock = {}) {
   const home = clock.home ?? homeDir();
   const now = clock.now ?? Date.now();
   const values: Record<string, string> = {
-    prompt: turn.prompt,
+    prompt: spokenPrompt(turn.prompt),
     model: turn.model ?? "",
     effort: turn.effort ?? "",
     cwd: turn.cwd,

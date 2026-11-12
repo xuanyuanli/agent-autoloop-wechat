@@ -17,17 +17,9 @@ const LIMIT = 1800;
 
 type Spoken = CardView & { rule?: string | null };
 
-/** A choice keeps its number. A plain reply is just the words. */
+/** A choice states the question first. The card number appears only where a reply needs it. */
 export function renderCard(card: Spoken) {
-  if (card.kind === "ask" && card.state === "open" && card.options.length) {
-    const lines = [`#${card.id} ${card.title}`];
-    if (card.text) lines.push(card.text);
-    card.options.forEach((option, index) => {
-      lines.push(`${index + 1}. ${option}${index === card.recommend ? "（推荐）" : ""}`);
-    });
-    lines.push(replyRules(card));
-    return lines.join("\n");
-  }
+  if (card.kind === "ask" && card.state === "open" && card.options.length) return renderAsk(card);
   if (card.kind === "notice" && card.title.trim() === "回复") return "";
   const spoken = spokenText(card);
   const outcome = outcomeOf(card);
@@ -44,11 +36,16 @@ function spokenText(card: Spoken) {
 }
 
 function outcomeOf(card: CardView) {
-  const chosen = card.choice === null ? card.answer : card.options[card.choice];
-  if (card.state === "decided") return chosen ? `已记录：你选了「${chosen}」。` : "已记录。";
+  if (card.state === "decided") return waitingForChoice(card);
   if (card.state === "done") return `已执行${card.result ? `：${card.result}` : "。"}`;
   if (card.state === "closed" && card.result) return card.result;
   return "";
+}
+
+/** The line sent the moment a choice is recorded, while the follow-up run is still going. */
+export function waitingForChoice(card: CardView) {
+  const chosen = card.choice === null ? card.answer : card.options[card.choice];
+  return chosen ? `你选了「${chosen}」，后台任务执行中，请等待` : "后台任务执行中，请等待";
 }
 
 /** Split on paragraph boundaries so one WeChat bubble stays under the transport limit. */
@@ -72,18 +69,29 @@ export type ParsedAnswer = { card: number; choice?: number; text?: string };
 
 const ANSWER_TEXT = 4000;
 
-/** Printed on every open choice so the reply rules travel with the card. */
-function replyRules(card: CardView) {
-  const n = (card.recommend ?? 0) + 1;
-  const id = card.id;
+/** Choice card in Markdown. The reply lines are the three forms the channel actually accepts. */
+function renderAsk(card: CardView) {
+  const example = Math.min(2, card.options.length);
+  const options = card.options.map(
+    (option, index) => `${index + 1}. ${option}${index === card.recommend ? "（推荐）" : ""}`,
+  );
+  const forms = [
+    "- 纯数字：`1`",
+    `- \`#${card.id} ${example}\``,
+    `- \`#${card.id} ${example} 超时只改测试环境\``,
+  ];
   return [
-    "回复规则：",
-    `只拍板：只开着这一张卡时，整句回 ${n}。`,
-    `拍板并补充：#${id} ${n} 后面写你的话。例如 #${id} ${n} 超时只改测试环境。编号就是本卡开头的 #${id}。`,
-    `多张卡同时开着时，只拍板要整句写 #${id} ${n}，不能只回一个数字。`,
-    "日常聊天：2 超时只改测试环境，以及其他句子。这张卡继续等你。",
-    "整句刚好是某个选项的原文，也会拍板。",
-  ].join("\n");
+    `**${card.title.trim()}**`,
+    card.text.trim(),
+    options.join("\n"),
+    "---",
+    "**怎么回复**",
+    forms.join("\n"),
+    "纯数字只在只开着这一张时有效。整句刚好是某个选项的原文也可以。",
+    "`2 超时只改测试环境` 这种没有 # 的，是聊天，这张卡还留着。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**

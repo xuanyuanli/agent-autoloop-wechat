@@ -132,4 +132,15 @@ test("an inspection launch keeps its own resume and does not rewrite the wechat 
   assert.equal(args[args.indexOf("--resume") + 1], "inspect-1");
   const saved = JSON.parse(readFileSync(path.join(home, "wechat-chat.json"), "utf8")) as { id: string };
   assert.equal(saved.id, "chat-1");
+  const spoken = args.at(-1) ?? "";
+  assert.match(spoken, /第一行必须是「今天是非工作日（周末或法定假日），跳过今日巡检」/);
+  assert.ok(spoken.endsWith("不附回执。"));
+});
+
+test("a wechat chat is not given the inspection off-day line", () => {
+  const args = commandLine({
+    ...turn,
+    prompt: "Agent 自动化中台按规则「微信对话」把这件活派给你。\n看过了，没有要做的：写没事可做",
+  });
+  assert.equal(args.at(-1)?.includes("跳过今日巡检"), false);
 });
