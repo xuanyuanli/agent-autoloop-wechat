@@ -15,19 +15,32 @@ export type CardView = {
 
 const LIMIT = 1800;
 
-export function renderCard(card: CardView) {
-  const lines = [`#${card.id} ${card.title}`];
-  if (card.text) lines.push(card.text);
-  if (card.state === "open" && card.options.length) {
+type Spoken = CardView & { rule?: string | null };
+
+/** A choice keeps its number. A plain reply is just the words. */
+export function renderCard(card: Spoken) {
+  if (card.kind === "ask" && card.state === "open" && card.options.length) {
+    const lines = [`#${card.id} ${card.title}`];
+    if (card.text) lines.push(card.text);
     card.options.forEach((option, index) => {
       lines.push(`${index + 1}. ${option}${index === card.recommend ? "（推荐）" : ""}`);
     });
     lines.push(replyRules(card));
-  } else {
-    const outcome = outcomeOf(card);
-    if (outcome) lines.push(outcome);
+    return lines.join("\n");
   }
-  return lines.join("\n");
+  if (card.kind === "notice" && card.title.trim() === "回复") return "";
+  const spoken = spokenText(card);
+  const outcome = outcomeOf(card);
+  return [spoken, outcome].filter(Boolean).join("\n");
+}
+
+function spokenText(card: Spoken) {
+  const title = card.title.trim();
+  const text = card.text.trim();
+  const hidden = !title || title === "回复" || (card.rule != null && title === card.rule);
+  if (text && (hidden || text.startsWith(title))) return text;
+  if (title && text) return `${title}\n${text}`;
+  return text || title;
 }
 
 function outcomeOf(card: CardView) {

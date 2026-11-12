@@ -22,6 +22,42 @@ test("an open ask lists options and marks the recommendation", () => {
   assert.match(text, /2 超时只改测试环境，以及其他句子/);
 });
 
+test("a plain reply has no card number and no label", () => {
+  const notice = {
+    id: 5,
+    kind: "notice" as const,
+    state: "closed" as const,
+    title: "微信对话",
+    text: "我是这边的助手。",
+    options: [],
+    recommend: null,
+    choice: null,
+    answer: null,
+    result: null,
+    rule: "微信对话",
+  };
+  assert.equal(renderCard(notice), "我是这边的助手。");
+  assert.equal(renderCard({ ...notice, id: 4, title: "回复", rule: undefined }), "");
+});
+
+test("a report notice keeps its headline and drops the number", () => {
+  const text = renderCard({
+    id: 8,
+    kind: "notice",
+    state: "closed",
+    title: "今天没有新的严重错误",
+    text: "结果表在下面。",
+    options: [],
+    recommend: null,
+    choice: null,
+    answer: null,
+    result: null,
+    rule: "工作日运维巡检",
+  });
+  assert.equal(text, "今天没有新的严重错误\n结果表在下面。");
+  assert.equal(text.includes("#"), false);
+});
+
 test("a bare number answers the only open card", () => {
   assert.deepEqual(parseAnswer("2", [{ id: 3, options: ["蓝色", "绿色"] }]), { card: 3, choice: 1 });
 });
