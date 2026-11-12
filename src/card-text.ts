@@ -31,7 +31,7 @@ function spokenText(card: Spoken) {
   const text = card.text.trim();
   const hidden = !title || title === "回复" || (card.rule != null && title === card.rule);
   if (text && (hidden || text.startsWith(title))) return text;
-  if (title && text) return `${title}\n${text}`;
+  if (title && text) return `**${title.replace(/^\*\*|\*\*$/g, "")}**\n\n${text}`;
   return text || title;
 }
 

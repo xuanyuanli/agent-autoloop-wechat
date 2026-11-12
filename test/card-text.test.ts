@@ -71,9 +71,9 @@ test("a report notice keeps its headline and drops the number", () => {
     choice: null,
     answer: null,
     result: null,
-    rule: "工作日运维巡检",
+    rule: "定时日报",
   });
-  assert.equal(text, "今天没有新的严重错误\n结果表在下面。");
+  assert.equal(text, "**今天没有新的严重错误**\n\n结果表在下面。");
   assert.equal(text.includes("#"), false);
 });
 

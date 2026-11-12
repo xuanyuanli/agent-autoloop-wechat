@@ -47,16 +47,19 @@ let pendingChat: { dir: string; at: number; home: string } | null = null;
 
 const PLACEHOLDER = /\{(prompt|model|effort|cwd|context)\}/g;
 
-const INSPECTION_RULE = "工作日运维巡检";
-const OFFDAY_LINE = "今天是非工作日（周末或法定假日），跳过今日巡检";
-
-/** The framework ending tells every run to write 没事可做. That outcome is not pushed, so the inspection must say otherwise last. */
+/** The framework ending comes after the rule text. Say the user-facing rule last, or the model recites its own steps. */
 function spokenPrompt(prompt: string) {
-  if (!prompt.includes(`规则「${INSPECTION_RULE}」`)) return prompt;
+  if (isChatPrompt(prompt)) {
+    return (
+      `${prompt}\n\n` +
+      "上面关于读资料、写结论、接着做的说明，都不要写进回复。" +
+      "最后一条消息的第一行只写给用户看的回答。不要写处理步骤，不要提中台、手册、资料文件、事件或上一轮做到哪。"
+    );
+  }
   return (
     `${prompt}\n\n` +
-    "上面若写了「看过了，没有要做的：写没事可做」，本规则不采用。" +
-    `非工作日跳过时，第一行必须是「${OFFDAY_LINE}」，不要以「没事可做」或「没跑成」开头，不附回执。`
+    "上面关于中台怎么结束这一轮的说明，不要写进发给人的正文。发给人的只有回执里的 notice 和 ask。" +
+    "notice 的 text 用 Markdown：小标题用 **，节与节之间空一行再写 ---，列表用 - 。微信会把单个换行收成空格。不要把排查过程写进 notice。"
   );
 }
 

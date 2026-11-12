@@ -21,10 +21,10 @@ const session = {
 
 test("an answer keeps the rule of the card it closes", () => {
   const plan = planMessages(
-    { ...session, open: [{ id: 7, options: ["保持", "改"], ref: "wechat-7", rule: "运维巡检架构师" }] },
+    { ...session, open: [{ id: 7, options: ["保持", "改"], ref: "wechat-7", rule: "定时日报" }] },
     [text("m1", "2")],
   );
-  assert.equal(plan.answers[0]?.rule, "运维巡检架构师");
+  assert.equal(plan.answers[0]?.rule, "定时日报");
 });
 
 test("a number answers the card that is open after the poll", () => {

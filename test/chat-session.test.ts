@@ -32,9 +32,9 @@ test("a legacy stamp still inside the window keeps the hub session", () => {
   assert.deepEqual(decision.stamp, { id: "chat-1", at: now });
 });
 
-test("an inspection reply is not cut by the chat clock", () => {
-  const inspection = "Agent 自动化中台按规则「工作日运维巡检」把这件活派给你。";
-  const decision = decideChat("inspect-1", inspection, { id: "chat-1", at: now - CHAT_TTL_MS - 1 }, now);
-  assert.equal(decision.resume, "inspect-1");
+test("a non-chat reply is not cut by the chat clock", () => {
+  const other = "Agent 自动化中台按规则「定时日报」把这件活派给你。";
+  const decision = decideChat("report-1", other, { id: "chat-1", at: now - CHAT_TTL_MS - 1 }, now);
+  assert.equal(decision.resume, "report-1");
   assert.equal(decision.remember, false);
 });

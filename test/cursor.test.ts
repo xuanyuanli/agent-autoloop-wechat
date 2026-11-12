@@ -15,7 +15,8 @@ const turn = {
 
 test("a new turn asks Cursor for json and keeps the prompt", () => {
   const args = commandLine(turn);
-  assert.deepEqual(args.slice(-5), ["--output-format", "json", "-p", "--trust", "你好"]);
+  assert.deepEqual(args.slice(-5, -1), ["--output-format", "json", "-p", "--trust"]);
+  assert.match(args.at(-1) ?? "", /^你好\n\n上面关于中台怎么结束这一轮的说明/);
   assert.equal(args.includes("--resume"), false);
 });
 
@@ -86,15 +87,15 @@ test("a failed wechat run does not keep a session id", () => {
   assert.equal(saved.id, null);
 });
 
-test("an inspection result does not become the wechat session", () => {
+test("another run's result does not become the wechat session", () => {
   const home = mkdtempSync(path.join(tmpdir(), "wx-home-"));
   const dir = mkdtempSync(path.join(tmpdir(), "wx-run-"));
   const other = mkdtempSync(path.join(tmpdir(), "wx-other-"));
   const now = 1_700_000_000_000;
   commandLine(chatTurn(dir, null), { home, now });
-  const inspection = JSON.stringify({ result: "巡检完了", session_id: "inspect" });
-  writeFileSync(path.join(other, "stdout-1.log"), inspection);
-  readOutput(inspection, 0, "");
+  const elsewhere = JSON.stringify({ result: "做完了", session_id: "other" });
+  writeFileSync(path.join(other, "stdout-1.log"), elsewhere);
+  readOutput(elsewhere, 0, "");
   const midway = JSON.parse(readFileSync(path.join(home, "wechat-chat.json"), "utf8")) as { id: string | null };
   assert.equal(midway.id, null);
   const stdout = JSON.stringify({ result: "聊天", session_id: "chat-9" });
@@ -118,29 +119,31 @@ test("a legacy stamp still inside the window resumes the hub session", () => {
   readOutput(stdout, 0, "");
 });
 
-test("an inspection launch keeps its own resume and does not rewrite the wechat stamp", () => {
+test("another rule keeps its resume and is told to send markdown", () => {
   const home = mkdtempSync(path.join(tmpdir(), "wx-home-"));
   const now = 1_700_000_000_000;
   writeFileSync(path.join(home, "wechat-chat.json"), JSON.stringify({ id: "chat-1", at: now - 8 * 60 * 60 * 1000 - 1 }));
   const args = commandLine({
-    prompt: "Agent 自动化中台按规则「工作日运维巡检」把这件活派给你。",
-    resume: "inspect-1",
-    cwd: "D:\\workspace\\jinpai\\backend",
+    prompt: "Agent 自动化中台按规则「定时日报」把这件活派给你。",
+    resume: "report-1",
+    cwd: "D:\\workspace\\example",
     contextFile: "C:\\context.json",
     command: baseCommand,
   }, { home, now });
-  assert.equal(args[args.indexOf("--resume") + 1], "inspect-1");
+  assert.equal(args[args.indexOf("--resume") + 1], "report-1");
   const saved = JSON.parse(readFileSync(path.join(home, "wechat-chat.json"), "utf8")) as { id: string };
   assert.equal(saved.id, "chat-1");
   const spoken = args.at(-1) ?? "";
-  assert.match(spoken, /第一行必须是「今天是非工作日（周末或法定假日），跳过今日巡检」/);
-  assert.ok(spoken.endsWith("不附回执。"));
+  assert.match(spoken, /发给人的只有回执里的 notice 和 ask/);
+  assert.match(spoken, /notice 的 text 用 Markdown/);
+  assert.equal(spoken.includes("只写给用户看的回答"), false);
 });
 
-test("a wechat chat is not given the inspection off-day line", () => {
+test("a wechat chat is not given the notice format", () => {
   const args = commandLine({
     ...turn,
     prompt: "Agent 自动化中台按规则「微信对话」把这件活派给你。\n看过了，没有要做的：写没事可做",
   });
-  assert.equal(args.at(-1)?.includes("跳过今日巡检"), false);
+  assert.equal(args.at(-1)?.includes("notice 的 text 用 Markdown"), false);
+  assert.match(args.at(-1) ?? "", /第一行只写给用户看的回答/);
 });
