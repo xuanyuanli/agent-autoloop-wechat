@@ -12,11 +12,11 @@ let verifyCode: string | undefined;
 let refreshes = 0;
 const started = Date.now();
 
-while (Date.now() - started < 3 * 60_000 && refreshes <= 3) {
+while (Date.now() - started < 10 * 60_000 && refreshes <= 3) {
   const qr = await api.fetchQr();
   console.log(`用手机微信扫描这个地址里的二维码：\n${qr.image}\n`);
   for (;;) {
-    if (Date.now() - started >= 3 * 60_000) break;
+    if (Date.now() - started >= 10 * 60_000) break;
     let status: Awaited<ReturnType<typeof api.pollQr>>;
     try {
       status = await api.pollQr(qr.qrcode, base, verifyCode);
@@ -68,5 +68,5 @@ while (Date.now() - started < 3 * 60_000 && refreshes <= 3) {
     }
   }
 }
-console.error("三分钟内没有确认登录。");
+console.error("十分钟内没有确认登录。");
 process.exit(1);
