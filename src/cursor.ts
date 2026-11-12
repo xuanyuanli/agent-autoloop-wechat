@@ -1,22 +1,44 @@
 // Cursor CLI print mode. A WeChat chat resumes only while it is still inside the idle window.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { decideChat, isChatPrompt, type ChatStamp } from "./chat-session.ts";
 
-type Turn = {
+export type Turn = {
   prompt: string;
   resume: string | null;
   cwd: string;
   model?: string;
   effort?: string;
   command?: string[];
+  program?: string;
   contextFile: string;
+};
+
+export type Reading = {
+  text?: string;
+  session?: string;
+  error?: string;
+  started?: boolean;
+  finished?: boolean;
 };
 
 type Clock = { home?: string; now?: number };
 
+const MAX_PENDING_CHATS = 64;
+const LOST_SESSION = /\b(?:session|chat|conversation)\b[^\n]*(?:not found|does not exist|invalid|unknown|missing)|找不到.*会话|会话不存在/i;
+const PLACEHOLDER = /\{(prompt|model|effort|cwd|context)\}/g;
+
+const POWERSHELL = path.join(
+  process.env.SystemRoot ?? "C:\\Windows",
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
+
 function homeDir() {
-  return process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || "", ".agent-autoloop");
+  return process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || homedir(), ".agent-autoloop");
 }
 
 function stampPath(home: string) {
@@ -42,10 +64,18 @@ function writeStamp(stamp: ChatStamp, home: string) {
   writeFileSync(file, `${JSON.stringify({ id: stamp.id, at: stamp.at })}\n`, { mode: 0o600 });
 }
 
-/** The WeChat launch whose stdout may carry the new Cursor session id. */
-let pendingChat: { dir: string; at: number; home: string } | null = null;
+/** Active WeChat launches keyed by run folder so concurrent runs never overwrite one another. */
+const pendingChats = new Map<string, { at: number; home: string }>();
 
-const PLACEHOLDER = /\{(prompt|model|effort|cwd|context)\}/g;
+function trackPendingChat(dir: string, entry: { at: number; home: string }) {
+  pendingChats.delete(dir);
+  pendingChats.set(dir, entry);
+  while (pendingChats.size > MAX_PENDING_CHATS) {
+    const oldest = pendingChats.keys().next().value;
+    if (oldest === undefined) break;
+    pendingChats.delete(oldest);
+  }
+}
 
 /** The framework ending comes after the rule text. Say the user-facing rule last, or the model recites its own steps. */
 function spokenPrompt(prompt: string) {
@@ -63,6 +93,60 @@ function spokenPrompt(prompt: string) {
   );
 }
 
+function findOnPath(name: string): string | null {
+  if (/[\\/]/.test(name)) return existsSync(name) ? name : null;
+  const separator = process.platform === "win32" ? ";" : ":";
+  const extensions = process.platform === "win32" ? [".exe", ".cmd", ".ps1", ""] : [""];
+  for (const raw of (process.env.PATH ?? "").split(separator)) {
+    const folder = raw.trim().replace(/^"(.*)"$/, "$1");
+    if (!folder) continue;
+    for (const ext of extensions) {
+      const candidate = path.join(folder, name.toLowerCase().endsWith(ext) ? name : `${name}${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+export function findCursorProgram(explicit?: string): string | null {
+  if (explicit) return /[\\/]/.test(explicit) ? (existsSync(explicit) ? explicit : null) : findOnPath(explicit);
+  const fromPath = findOnPath("cursor-agent");
+  if (fromPath) return fromPath;
+  const localAppData = process.env.LOCALAPPDATA || path.join(homedir(), "AppData", "Local");
+  const candidates =
+    process.platform === "win32"
+      ? [
+          path.join(localAppData, "cursor-agent", "cursor-agent.cmd"),
+          path.join(localAppData, "cursor-agent", "cursor-agent.ps1"),
+          path.join(localAppData, "cursor-agent", "cursor-agent.exe"),
+        ]
+      : [
+          path.join(homedir(), ".local", "bin", "cursor-agent"),
+          "/opt/homebrew/bin/cursor-agent",
+          "/usr/local/bin/cursor-agent",
+        ];
+  return candidates.find((file) => existsSync(file)) ?? null;
+}
+
+function launcherFor(program: string): string[] {
+  if (process.platform === "win32" && /\.ps1$/i.test(program)) {
+    return [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", program];
+  }
+  return [program];
+}
+
+function defaultTemplate(turn: Turn): string[] {
+  const program = findCursorProgram(turn.program);
+  if (!program) {
+    throw new Error(
+      turn.program
+        ? `找不到指定的 Cursor CLI 程序：${turn.program}`
+        : "找不到 cursor-agent：请先安装 Cursor CLI，或在 rules.json 的 agent 中配置 command / program",
+    );
+  }
+  return [...launcherFor(program), ...(turn.model ? ["--model", "{model}"] : []), "-p", "--trust", "{prompt}"];
+}
+
 export function commandLine(turn: Turn, clock: Clock = {}) {
   const home = clock.home ?? homeDir();
   const now = clock.now ?? Date.now();
@@ -73,10 +157,11 @@ export function commandLine(turn: Turn, clock: Clock = {}) {
     cwd: turn.cwd,
     context: turn.contextFile,
   };
-  const args = (turn.command ?? []).map((part) => part.replace(PLACEHOLDER, (_, name: string) => values[name] ?? ""));
+  const template = turn.command?.length ? turn.command : defaultTemplate(turn);
+  const args = template.map((part) => part.replace(PLACEHOLDER, (_, name: string) => values[name] ?? ""));
   const decision = decideChat(turn.resume, turn.prompt, readStamp(home), now);
   if (decision.remember && decision.stamp) writeStamp(decision.stamp, home);
-  if (isChatPrompt(turn.prompt)) pendingChat = { dir: path.dirname(turn.contextFile), at: now, home };
+  if (isChatPrompt(turn.prompt)) trackPendingChat(path.dirname(turn.contextFile), { at: now, home });
   const extra: string[] = [];
   if (decision.resume && !args.includes("--resume")) extra.push("--resume", decision.resume);
   if (!args.includes("--output-format")) extra.push("--output-format", "json");
@@ -87,18 +172,62 @@ export function commandLine(turn: Turn, clock: Clock = {}) {
 
 type CursorResult = { result?: string; session_id?: string; is_error?: boolean };
 
-export function readOutput(stdout: string, code: number | null, stderr: string) {
+export function readOutput(stdout: string, code: number | null, stderr: string): Reading {
   const parsed = cursorResult(stdout);
-  if (pendingChat && stdoutBelongs(pendingChat.dir, stdout)) {
-    if (code === 0 && parsed?.session_id) writeStamp({ id: parsed.session_id, at: pendingChat.at }, pendingChat.home);
-    if (code !== null) pendingChat = null;
+  for (const [dir, entry] of pendingChats) {
+    if (!stdoutBelongs(dir, stdout)) continue;
+    if (code === 0 && parsed?.session_id) writeStamp({ id: parsed.session_id, at: entry.at }, entry.home);
+    if (code !== null) pendingChats.delete(dir);
+    break;
   }
-  if (code === null) return {};
+  const session = parsed?.session_id ? { session: parsed.session_id } : {};
+  if (code === null) {
+    if (parsed?.result !== undefined) {
+      if (parsed.is_error) return { started: true, finished: true, error: parsed.result || "Cursor 返回错误", ...session };
+      return { text: parsed.result, started: true, finished: true, ...session };
+    }
+    return { started: true, ...session };
+  }
   const tail = (stderr || stdout).trim().slice(-500);
-  if (code !== 0) return { error: `退出码 ${code}：${tail || "没留下原因"}` };
-  if (!parsed) return { text: stdout };
-  if (parsed.is_error) return { error: parsed.result || "Cursor 返回错误", ...(parsed.session_id ? { session: parsed.session_id } : {}) };
-  return { text: parsed.result ?? stdout, ...(parsed.session_id ? { session: parsed.session_id } : {}) };
+  if (code !== 0) {
+    const lost = LOST_SESSION.test(tail);
+    return { started: !lost, ...session, error: `退出码 ${code}：${tail || "没留下原因"}` };
+  }
+  if (!parsed) {
+    if (!stdout.trim()) return { started: true, error: tail || "没留下结果" };
+    return { text: stdout, started: true, finished: true };
+  }
+  if (parsed.is_error) {
+    const detail = parsed.result || "Cursor 返回错误";
+    return { started: !LOST_SESSION.test(detail), finished: true, error: detail, ...session };
+  }
+  return { text: parsed.result ?? stdout, started: true, finished: true, ...session };
+}
+
+export function checkCursor(program?: string, home = homeDir()): string | null {
+  if (program) {
+    return findCursorProgram(program) ? null : `Cursor CLI 找不到指定程序：${program}`;
+  }
+  try {
+    const rules = JSON.parse(readFileSync(path.join(home, "rules.json"), "utf8")) as {
+      agents?: Record<string, { use?: string; command?: string[]; program?: string }>;
+    };
+    const configured = Object.values(rules.agents ?? {}).filter((agent) => agent?.use === "agent-autoloop-wechat");
+    for (const agent of configured) {
+      if (agent.command?.length) {
+        const head = agent.command[0];
+        if (!findCursorProgram(head)) return `Cursor CLI 启动程序不存在：${head}`;
+      } else if (!findCursorProgram(agent.program)) {
+        return "找不到 cursor-agent：请先安装 Cursor CLI，或在 rules.json 的 agent 中配置 command / program";
+      }
+    }
+    if (configured.length > 0) return null;
+  } catch {
+    // Fall back to checking default binary locations when rules.json is absent or unreadable.
+  }
+  return findCursorProgram()
+    ? null
+    : "找不到 cursor-agent：请先安装 Cursor CLI，或在 rules.json 的 agent 中配置 command / program";
 }
 
 function stdoutBelongs(dir: string, stdout: string) {

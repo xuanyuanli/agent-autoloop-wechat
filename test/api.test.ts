@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { createClient, type Session } from "../src/api.ts";
+import { BOT_AGENT, CHANNEL_VERSION, createClient, type Session } from "../src/api.ts";
 
 const session: Session = {
   token: "token",
@@ -20,6 +21,12 @@ function client(handler: (url: string, body: string) => string) {
   };
   return { calls, api: createClient(fetchImpl, async () => {}) };
 }
+
+test("CHANNEL_VERSION and BOT_AGENT stay aligned with package.json version", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  assert.equal(CHANNEL_VERSION, `3.0.1/agent-autoloop-wechat-${pkg.version}`);
+  assert.equal(BOT_AGENT, `agent-autoloop-wechat/${pkg.version}`);
+});
 
 test("getUpdates treats errcode as a failure even when ret is 0", async () => {
   const { api } = client(() => JSON.stringify({ ret: 0, errcode: -14, errmsg: "session" }));

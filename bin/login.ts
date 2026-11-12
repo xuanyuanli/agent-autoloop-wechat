@@ -57,6 +57,7 @@ while (Date.now() - started < 10 * 60_000 && refreshes <= 3) {
         userId: status.ilink_user_id,
       }));
       console.log(`登录成功，会话已写入 ${file}`);
+      console.log(`你的微信标识（可填入 rules.json 的 channels.wechat.answerers）：${status.ilink_user_id}`);
       process.exit(0);
     }
     if (name === "expired" || name === "verify_code_blocked") {

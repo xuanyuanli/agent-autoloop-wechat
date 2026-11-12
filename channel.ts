@@ -1,30 +1,18 @@
 // WeChat ClawBot channel. A card goes out as text. Reply "2" or "#12 2" to answer.
 // WeChat cannot edit a sent bubble, so a later version is a short follow-up.
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { createClient } from "./src/api.ts";
+import { createClient, type WechatClient } from "./src/api.ts";
 import { renderCard, splitText, waitingForChoice, type CardView } from "./src/card-text.ts";
 import { CHAT_RULE } from "./src/chat-session.ts";
 import { applyPage, trackDelivery } from "./src/page.ts";
-import { readSession, sessionPath, writeSession, type StoredSession } from "./src/session.ts";
+import { readSessionAsync, sessionPath, writeSessionAsync, type StoredSession } from "./src/session.ts";
 import { finishLease, leaseExpired, startLease, TICKET_TTL_MS, TYPING_INTERVAL_MS, type TypingLease } from "./src/typing.ts";
 
 const WAITING = "等待后续文字指令";
 
-let writing: Promise<void> = Promise.resolve();
-function updateSession(file: string, change: (session: StoredSession) => void) {
-  const run = writing.then(async () => {
-    const session = readSession(file);
-    if (!session) return;
-    change(session);
-    writeSession(file, session);
-  });
-  writing = run.then(() => undefined, () => undefined);
-  return run;
-}
-
-type Card = CardView & { version: number; ref: string | null; rule?: string | null };
-type Context = {
+export type Card = CardView & { version: number; ref: string | null; rule?: string | null };
+export type Context = {
   hub: {
     nextCard(wait: number): Promise<{ card: Card | null }>;
     delivered(card: number, version: number, ref: string | null): Promise<unknown>;
@@ -36,22 +24,56 @@ type Context = {
   signal: AbortSignal;
 };
 
-const sleep = (ms: number, signal: AbortSignal) =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
+export type WechatDeps = {
+  api?: WechatClient;
+  fetchImpl?: typeof fetch;
+  wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  home?: string;
+};
+
+const defaultSleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
     const stop = () => {
       clearTimeout(timer);
-      resolve(undefined);
+      resolve();
     };
     signal.addEventListener("abort", stop, { once: true });
   });
 
-export default async function wechat({ hub, options, log, signal }: Context) {
-  const file = typeof options.session === "string" ? options.session : sessionPath();
-  const api = createClient();
+export default async function wechat({ hub, options, log, signal }: Context, deps: WechatDeps = {}) {
+  const file = typeof options.session === "string" ? options.session : sessionPath(deps.home);
+  const api = deps.api ?? createClient(deps.fetchImpl);
+  const sleep = deps.wait ?? defaultSleep;
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+
+  let writing: Promise<void> = Promise.resolve();
+  function updateSession(change: (session: StoredSession) => void) {
+    const run = writing.then(async () => {
+      const session = await readSessionAsync(file);
+      if (!session) return;
+      change(session);
+      await writeSessionAsync(file, session);
+    });
+    writing = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   const typing = createTyping();
-  signal.addEventListener("abort", () => void typing.hide(), { once: true });
-  await Promise.all([deliver(), receive()]);
+  const onAbort = () => void typing.hide();
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    await Promise.all([deliver(), receive()]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 
   /** 「对方正在输入」. Failures stay here and never fail the message itself. */
   function createTyping() {
@@ -161,7 +183,7 @@ export default async function wechat({ hub, options, log, signal }: Context) {
   }
 
   async function load(): Promise<StoredSession | null> {
-    return readSession(file);
+    return readSessionAsync(file);
   }
 
   async function deliver() {
@@ -183,24 +205,25 @@ export default async function wechat({ hub, options, log, signal }: Context) {
         await sleep(15_000, signal);
         continue;
       }
-      const before = (await load())?.open ?? [];
+      const before = session.open ?? [];
       const added = card.state === "open" && !before.some((item) => item.id === card.id);
       let sent = false;
       try {
-        await updateSession(file, (fresh) => {
+        await updateSession((fresh) => {
           fresh.open = trackDelivery(fresh.open, card);
         });
         const body = card.ref && card.state !== "open" ? followUp(card) : renderCard(card);
         if (body) {
           try {
-            for (const part of splitText(body)) {
-              await api.sendText(session, session.userId, part, session.contextToken);
-              await sleep(2_000, signal);
+            const parts = splitText(body);
+            for (let i = 0; i < parts.length; i++) {
+              await api.sendText(session, session.userId, parts[i], session.contextToken);
+              if (i < parts.length - 1 || parts.length === 1) await sleep(2_000, signal);
             }
             sent = true;
           } catch (error) {
             if (added) {
-              await updateSession(file, (fresh) => {
+              await updateSession((fresh) => {
                 fresh.open = (fresh.open ?? []).filter((item) => item.id !== card.id);
               }).catch(() => {});
             }
@@ -229,7 +252,12 @@ export default async function wechat({ hub, options, log, signal }: Context) {
         const page = await api.getUpdates(session, signal);
         const plan = await applyPage(async () => (await load()) ?? session, page.messages, {
           answer: async (item, contextToken) => {
-            await hub.answer(item.card, { choice: item.choice, by: item.by, ref: item.ref, ...(item.text ? { text: item.text } : {}) });
+            await hub.answer(item.card, {
+              choice: item.choice,
+              by: item.by,
+              ref: item.ref,
+              ...(item.text ? { text: item.text } : {}),
+            });
             if (item.rule) typing.remember(item.rule, contextToken);
           },
           sendWait: async (contextToken) => {
@@ -244,14 +272,14 @@ export default async function wechat({ hub, options, log, signal }: Context) {
             const first = !typing.expects(CHAT_RULE);
             typing.remember(CHAT_RULE, contextToken);
             try {
-              await emit(task, options);
+              await emit(task, options, fetchImpl, deps.home);
             } catch (error) {
               if (first) typing.settle(CHAT_RULE);
               throw error;
             }
           },
         });
-        await updateSession(file, (fresh) => {
+        await updateSession((fresh) => {
           const stillOpen = new Map((fresh.open ?? []).map((item) => [item.id, item]));
           for (const id of plan.closed) stillOpen.delete(id);
           fresh.open = [...stillOpen.values()];
@@ -271,11 +299,20 @@ export default async function wechat({ hub, options, log, signal }: Context) {
   }
 }
 
-async function emit(task: { id: string; text: string; detail: string }, options: Record<string, unknown>) {
-  const source = sourceCredentials(options);
+async function emit(
+  task: { id: string; text: string; detail: string },
+  options: Record<string, unknown>,
+  fetchImpl: typeof fetch,
+  explicitHome?: string,
+) {
+  const source = await sourceCredentials(options, explicitHome);
   if (!source) throw new Error("本机 config.json 里没有来源密钥");
-  const base = (process.env.AGENT_AUTOLOOP_PUBLIC_URL || "http://127.0.0.1:3350").replace(/\/$/, "");
-  const response = await fetch(`${base}/v1/events`, {
+  const base = (
+    (typeof options.hubUrl === "string" && options.hubUrl) ||
+    process.env.AGENT_AUTOLOOP_PUBLIC_URL ||
+    "http://127.0.0.1:3350"
+  ).replace(/\/$/, "");
+  const response = await fetchImpl(`${base}/v1/events`, {
     method: "POST",
     headers: { authorization: `Bearer ${source}`, "content-type": "application/json" },
     body: JSON.stringify({
@@ -291,11 +328,15 @@ async function emit(task: { id: string; text: string; detail: string }, options:
   }
 }
 
-function sourceCredentials(options: Record<string, unknown>) {
+async function sourceCredentials(options: Record<string, unknown>, explicitHome?: string) {
   if (typeof options.sourceKey === "string" && options.sourceKey) return options.sourceKey;
   try {
-    const home = process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || "", ".agent-autoloop");
-    const config = JSON.parse(readFileSync(path.join(home, "config.json"), "utf8")) as { source?: { key?: string } };
+    const home =
+      explicitHome ||
+      process.env.AGENT_AUTOLOOP_HOME ||
+      path.join(process.env.USERPROFILE || process.env.HOME || "", ".agent-autoloop");
+    const raw = await readFile(path.join(home, "config.json"), "utf8");
+    const config = JSON.parse(raw) as { source?: { key?: string } };
     return config.source?.key || "";
   } catch {
     return "";

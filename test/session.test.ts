@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { sessionFromLogin, type StoredSession } from "../src/session.ts";
+import { readSession, readSessionAsync, sessionFromLogin, writeSession, writeSessionAsync, type StoredSession } from "../src/session.ts";
 
 const existing: StoredSession = {
   token: "old",
@@ -27,4 +30,15 @@ test("logging in as a different account drops the previous cards", () => {
   assert.equal(next.cursor, "");
   assert.equal(next.open, undefined);
   assert.equal(next.pending, undefined);
+});
+
+test("async and sync session persistence round-trip atomically", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "wx-sess-"));
+  const file = path.join(dir, "wechat-session.json");
+  await writeSessionAsync(file, existing);
+  const loadedAsync = await readSessionAsync(file);
+  assert.deepEqual(loadedAsync, existing);
+
+  writeSession(file, { ...existing, cursor: "cur-10" });
+  assert.equal(readSession(file)?.cursor, "cur-10");
 });

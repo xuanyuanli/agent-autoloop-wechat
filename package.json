@@ -2,14 +2,35 @@
   "name": "agent-autoloop-wechat",
   "version": "0.2.13",
   "private": false,
-  "description": "微信 ClawBot（iLink）通道，把 agent-autoloop 的卡片发到微信，并用回复序号拍板。",
+  "description": "微信 ClawBot（iLink）通道与 Cursor CLI 会话插件，把 agent-autoloop 的卡片发到微信，并用聊天回复拍板或发起对话。",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xuanyuanli/agent-autoloop-wechat.git"
+  },
+  "homepage": "https://github.com/xuanyuanli/agent-autoloop-wechat#readme",
+  "bugs": {
+    "url": "https://github.com/xuanyuanli/agent-autoloop-wechat/issues"
+  },
+  "keywords": [
+    "agent-autoloop",
+    "wechat",
+    "clawbot",
+    "ilink",
+    "cursor",
+    "agent"
+  ],
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "typecheck": "tsc -p .",
     "login": "node --disable-warning=ExperimentalWarning bin/login.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
   }
 }

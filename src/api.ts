@@ -1,10 +1,14 @@
 // iLink Bot HTTP client. Field names follow the public protocol document of
 // @tencent-weixin/openclaw-weixin (MIT, Copyright (C) 2026 Tencent).
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
-export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.13";
-const BOT_AGENT = "agent-autoloop-wechat/0.2.13";
+const PACKAGE_VERSION = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string }
+).version ?? "0.0.0";
+export const CHANNEL_VERSION = `3.0.1/agent-autoloop-wechat-${PACKAGE_VERSION}`;
+export const BOT_AGENT = `agent-autoloop-wechat/${PACKAGE_VERSION}`;
 
 function statusCode(parsed: { ret?: number; errcode?: number }) {
   if (typeof parsed.ret === "number" && parsed.ret !== 0) return parsed.ret;
@@ -54,7 +58,10 @@ function randomUin() {
   return Buffer.from(String(Math.floor(Math.random() * 4294967296)), "utf8").toString("base64");
 }
 
-export function createClient(fetchImpl: FetchLike = globalThis.fetch, wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+export function createClient(
+  fetchImpl: FetchLike = globalThis.fetch,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+) {
   const headers = {
     "iLink-App-Id": "bot",
     "iLink-App-ClientVersion": clientVersion(CHANNEL_VERSION),
@@ -205,3 +212,5 @@ export function createClient(fetchImpl: FetchLike = globalThis.fetch, wait: (ms:
     },
   };
 }
+
+export type WechatClient = ReturnType<typeof createClient>;

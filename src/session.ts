@@ -1,8 +1,11 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Session } from "./api.ts";
 
-export function sessionPath(home = process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".agent-autoloop")) {
+export function sessionPath(
+  home = process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".agent-autoloop"),
+) {
   return path.join(home, "wechat-session.json");
 }
 
@@ -13,9 +16,9 @@ export type StoredSession = Session & {
   pending?: Held[];
 };
 
-export function readSession(file: string): StoredSession | null {
+function parseSession(raw: string): StoredSession | null {
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<StoredSession>;
+    const parsed = JSON.parse(raw) as Partial<StoredSession>;
     if (!parsed.token || !parsed.baseUrl || !parsed.userId || !parsed.botId) return null;
     return {
       token: parsed.token,
@@ -27,6 +30,22 @@ export function readSession(file: string): StoredSession | null {
       ...(parsed.contextToken ? { contextToken: parsed.contextToken } : {}),
       ...(Array.isArray(parsed.pending) ? { pending: parsed.pending } : {}),
     };
+  } catch {
+    return null;
+  }
+}
+
+export function readSession(file: string): StoredSession | null {
+  try {
+    return parseSession(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export async function readSessionAsync(file: string): Promise<StoredSession | null> {
+  try {
+    return parseSession(await readFile(file, "utf8"));
   } catch {
     return null;
   }
@@ -52,7 +71,7 @@ export function sessionFromLogin(
 
 export function writeSession(file: string, session: StoredSession) {
   mkdirSync(path.dirname(file), { recursive: true });
-  const next = `${file}.tmp`;
+  const next = `${file}.${process.pid}.tmp`;
   writeFileSync(next, `${JSON.stringify(session, null, 2)}\n`, { mode: 0o600 });
   try {
     chmodSync(next, 0o600);
@@ -60,4 +79,28 @@ export function writeSession(file: string, session: StoredSession) {
     // Windows may ignore the Unix mode. The file still stays under the user profile.
   }
   renameSync(next, file);
+}
+
+export async function writeSessionAsync(file: string, session: StoredSession) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const next = `${file}.${process.pid}.tmp`;
+  await writeFile(next, `${JSON.stringify(session, null, 2)}\n`, { mode: 0o600 });
+  try {
+    await chmod(next, 0o600);
+  } catch {
+    // Windows may ignore the Unix mode. The file still stays under the user profile.
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await rename(next, file);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt < 2 && (code === "EPERM" || code === "EACCES" || code === "EBUSY")) {
+        await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
 }
