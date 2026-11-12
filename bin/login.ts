@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { createClient } from "../src/api.ts";
-import { sessionPath, writeSession } from "../src/session.ts";
+import { readSession, sessionFromLogin, sessionPath, writeSession } from "../src/session.ts";
 
 const file = sessionPath();
 const api = createClient();
@@ -50,13 +50,12 @@ while (Date.now() - started < 10 * 60_000 && refreshes <= 3) {
       process.exit(1);
     }
     if (name === "confirmed" && status.bot_token && status.baseurl && status.ilink_bot_id && status.ilink_user_id) {
-      writeSession(file, {
+      writeSession(file, sessionFromLogin(readSession(file), {
         token: status.bot_token,
         baseUrl: status.baseurl,
         botId: status.ilink_bot_id,
         userId: status.ilink_user_id,
-        cursor: "",
-      });
+      }));
       console.log(`登录成功，会话已写入 ${file}`);
       process.exit(0);
     }

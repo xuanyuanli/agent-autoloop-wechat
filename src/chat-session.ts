@@ -3,16 +3,20 @@
 export const CHAT_RULE = "微信对话";
 export const CHAT_TTL_MS = 8 * 60 * 60 * 1000;
 
-export type ChatStamp = { at: number; break: boolean };
+export type ChatStamp = { id: string | null; at: number; legacy?: boolean };
 
 export function isChatPrompt(prompt: string) {
   return prompt.includes(`规则「${CHAT_RULE}」`);
 }
 
-/** Whether this launch should keep the hub's session, and the stamp to store. */
+/** Whether this launch should keep a Cursor session, and the stamp to store. */
 export function decideChat(resume: string | null, prompt: string, stamp: ChatStamp | null, now: number) {
   if (!isChatPrompt(prompt)) return { resume, stamp, fresh: false, remember: false };
-  const alive = Boolean(resume) && Boolean(stamp) && !stamp!.break && now - stamp!.at < CHAT_TTL_MS;
-  if (alive) return { resume, stamp: { at: now, break: false }, fresh: false, remember: true };
-  return { resume: null, stamp: { at: stamp?.at ?? 0, break: true }, fresh: true, remember: true };
+  // A stamp written before session ids were stored can still continue the hub's id.
+  if (stamp?.legacy && resume && now - stamp.at < CHAT_TTL_MS) {
+    return { resume, stamp: { id: resume, at: now }, fresh: false, remember: true };
+  }
+  const alive = Boolean(stamp?.id) && now - (stamp?.at ?? 0) < CHAT_TTL_MS;
+  if (alive && stamp?.id) return { resume: stamp.id, stamp: { id: stamp.id, at: now }, fresh: false, remember: true };
+  return { resume: null, stamp: { id: null, at: 0 }, fresh: true, remember: true };
 }

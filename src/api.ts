@@ -3,8 +3,14 @@
 import { randomUUID } from "node:crypto";
 
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
-export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.1";
-const BOT_AGENT = "agent-autoloop-wechat/0.1.0";
+export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.2";
+const BOT_AGENT = "agent-autoloop-wechat/0.2.2";
+
+function statusCode(parsed: { ret?: number; errcode?: number }) {
+  if (typeof parsed.ret === "number" && parsed.ret !== 0) return parsed.ret;
+  if (typeof parsed.errcode === "number" && parsed.errcode !== 0) return parsed.errcode;
+  return 0;
+}
 
 export type WechatMessage = {
   message_type?: number;
@@ -48,7 +54,7 @@ function randomUin() {
   return Buffer.from(String(Math.floor(Math.random() * 4294967296)), "utf8").toString("base64");
 }
 
-export function createClient(fetchImpl: FetchLike = globalThis.fetch) {
+export function createClient(fetchImpl: FetchLike = globalThis.fetch, wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
   const headers = {
     "iLink-App-Id": "bot",
     "iLink-App-ClientVersion": clientVersion(CHANNEL_VERSION),
@@ -130,7 +136,7 @@ export function createClient(fetchImpl: FetchLike = globalThis.fetch) {
         msgs?: WechatMessage[];
         get_updates_buf?: string;
       };
-      const code = parsed.ret ?? parsed.errcode ?? 0;
+      const code = statusCode(parsed);
       if (code !== 0) throw new Error(`getupdates ${code} ${parsed.errmsg ?? ""}`.trim());
       return { messages: parsed.msgs ?? [], cursor: parsed.get_updates_buf };
     },
@@ -148,8 +154,9 @@ export function createClient(fetchImpl: FetchLike = globalThis.fetch) {
         };
         if (token) message.context_token = token;
         const raw = await post(session.baseUrl, "ilink/bot/sendmessage", JSON.stringify({ msg: message, base_info: baseInfo }), session.token, 20_000);
+        if (!raw) throw new Error("sendmessage 空响应");
         const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string };
-        const code = parsed.ret ?? parsed.errcode ?? 0;
+        const code = statusCode(parsed);
         if (code === 0) return;
         if (code === -14 && token && !stripped) {
           token = undefined;
@@ -157,11 +164,12 @@ export function createClient(fetchImpl: FetchLike = globalThis.fetch) {
           continue;
         }
         if (code === -2 && attempt < 3) {
-          await new Promise((resolve) => setTimeout(resolve, 2000 * 2 ** attempt));
+          await wait(2000 * 2 ** attempt);
           continue;
         }
         throw new Error(`sendmessage ${code} ${parsed.errmsg ?? ""}`.trim());
       }
+      throw new Error("sendmessage 没有发出去");
     },
   };
 }

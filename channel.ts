@@ -3,9 +3,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createClient } from "./src/api.ts";
-import { parseAnswer, renderCard, splitText, type CardView } from "./src/card-text.ts";
-import { composeTask, inboundMessage } from "./src/inbound.ts";
-import { readSession, sessionPath, writeSession, type Held, type StoredSession } from "./src/session.ts";
+import { renderCard, splitText, type CardView } from "./src/card-text.ts";
+import { applyPage, trackDelivery } from "./src/page.ts";
+import { readSession, sessionPath, writeSession, type StoredSession } from "./src/session.ts";
 
 const WAITING = "等待后续文字指令";
 
@@ -72,20 +72,28 @@ export default async function wechat({ hub, options, log, signal }: Context) {
         await sleep(15_000, signal);
         continue;
       }
+      const before = (await load())?.open ?? [];
+      const added = card.state === "open" && !before.some((item) => item.id === card.id);
       try {
+        await updateSession(file, (fresh) => {
+          fresh.open = trackDelivery(fresh.open, card);
+        });
         const body = card.ref && card.state !== "open" ? followUp(card) : renderCard(card);
         if (body) {
-          for (const part of splitText(body)) {
-            await api.sendText(session, session.userId, part, session.contextToken);
-            await sleep(2_000, signal);
+          try {
+            for (const part of splitText(body)) {
+              await api.sendText(session, session.userId, part, session.contextToken);
+              await sleep(2_000, signal);
+            }
+          } catch (error) {
+            if (added) {
+              await updateSession(file, (fresh) => {
+                fresh.open = (fresh.open ?? []).filter((item) => item.id !== card.id);
+              }).catch(() => {});
+            }
+            throw error;
           }
         }
-        await updateSession(file, (fresh) => {
-          const open = new Map((fresh.open ?? []).map((item) => [item.id, item]));
-          if (card.state === "open") open.set(card.id, { id: card.id, options: card.options });
-          else open.delete(card.id);
-          fresh.open = [...open.values()];
-        });
         await hub.delivered(card.id, card.version, card.ref ?? `wechat-${card.id}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -104,43 +112,24 @@ export default async function wechat({ hub, options, log, signal }: Context) {
       }
       try {
         const page = await api.getUpdates(session, signal);
-        const open = new Map((session.open ?? []).map((item) => [item.id, item]));
-        const held: Held[] = [...(session.pending ?? [])];
-        const closed: number[] = [];
-        const answers: { card: number; choice: number; by: string }[] = [];
-        const tasks: { id: string; text: string; detail: string }[] = [];
-        let waiting = false;
-        let contextToken = session.contextToken;
-        for (const message of page.messages) {
-          const inbound = inboundMessage(message);
-          if (!inbound || inbound.from !== session.userId) continue;
-          if (inbound.contextToken) contextToken = inbound.contextToken;
-          const parsed = inbound.text ? parseAnswer(inbound.text, [...open.values()]) : null;
-          if (parsed?.choice !== undefined) {
-            answers.push({ card: parsed.card, choice: parsed.choice, by: inbound.from });
-            open.delete(parsed.card);
-            closed.push(parsed.card);
-            continue;
-          }
-          if (!inbound.text) {
-            held.push(...inbound.media);
-            waiting = true;
-            continue;
-          }
-          waiting = false;
-          tasks.push({ id: inbound.id, text: inbound.text, detail: composeTask(held.splice(0), inbound.text) });
-        }
-        for (const parsed of answers) {
-          await hub.answer(parsed.card, { choice: parsed.choice, by: parsed.by, ref: `wechat-${parsed.card}` });
-        }
-        if (waiting) await api.sendText(session, session.userId, WAITING, contextToken);
-        for (const task of tasks) await emit(task, options, log);
+        const plan = await applyPage(async () => (await load()) ?? session, page.messages, {
+          answer: async (item) => {
+            await hub.answer(item.card, { choice: item.choice, by: item.by, ref: item.ref });
+          },
+          sendWait: async (contextToken) => {
+            await api.sendText(session, session.userId, WAITING, contextToken);
+          },
+          emit: async (task) => {
+            await emit(task, options);
+          },
+        });
         await updateSession(file, (fresh) => {
           const stillOpen = new Map((fresh.open ?? []).map((item) => [item.id, item]));
-          for (const id of closed) stillOpen.delete(id);
+          for (const id of plan.closed) stillOpen.delete(id);
           fresh.open = [...stillOpen.values()];
-          fresh.pending = held;
-          if (contextToken) fresh.contextToken = contextToken;
+          if (plan.pending.length) fresh.pending = plan.pending;
+          else delete fresh.pending;
+          if (plan.contextToken) fresh.contextToken = plan.contextToken;
           if (page.cursor) fresh.cursor = page.cursor;
         });
       } catch (error) {
@@ -154,11 +143,7 @@ export default async function wechat({ hub, options, log, signal }: Context) {
   }
 }
 
-async function emit(
-  task: { id: string; text: string; detail: string },
-  options: Record<string, unknown>,
-  log: (line: string) => void,
-) {
+async function emit(task: { id: string; text: string; detail: string }, options: Record<string, unknown>) {
   const source = sourceCredentials(options);
   if (!source) throw new Error("本机 config.json 里没有来源密钥");
   const base = (process.env.AGENT_AUTOLOOP_PUBLIC_URL || "http://127.0.0.1:3350").replace(/\/$/, "");

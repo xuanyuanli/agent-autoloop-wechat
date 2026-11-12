@@ -8,7 +8,7 @@ export function sessionPath(home = process.env.AGENT_AUTOLOOP_HOME || path.join(
 
 export type Held = { kind: string; name?: string; note?: string };
 export type StoredSession = Session & {
-  open?: { id: number; options: string[] }[];
+  open?: { id: number; options: string[]; ref?: string }[];
   contextToken?: string;
   pending?: Held[];
 };
@@ -30,6 +30,24 @@ export function readSession(file: string): StoredSession | null {
   } catch {
     return null;
   }
+}
+
+/** A new login keeps unanswered cards when it is the same WeChat account. */
+export function sessionFromLogin(
+  existing: StoredSession | null,
+  next: { token: string; baseUrl: string; botId: string; userId: string },
+): StoredSession {
+  const same = existing?.userId === next.userId;
+  return {
+    token: next.token,
+    baseUrl: next.baseUrl,
+    botId: next.botId,
+    userId: next.userId,
+    cursor: existing && same ? existing.cursor : "",
+    ...(existing && same && existing.contextToken ? { contextToken: existing.contextToken } : {}),
+    ...(existing && same && existing.open?.length ? { open: existing.open } : {}),
+    ...(existing && same && existing.pending?.length ? { pending: existing.pending } : {}),
+  };
 }
 
 export function writeSession(file: string, session: StoredSession) {
