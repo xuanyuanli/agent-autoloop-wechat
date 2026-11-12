@@ -1,0 +1,15 @@
+{
+  "name": "agent-autoloop-wechat",
+  "version": "0.1.0",
+  "private": false,
+  "description": "微信 ClawBot（iLink）通道，把 agent-autoloop 的卡片发到微信，并用回复序号拍板。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "login": "node --disable-warning=ExperimentalWarning bin/login.ts"
+  }
+}
