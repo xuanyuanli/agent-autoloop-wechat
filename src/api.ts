@@ -3,8 +3,8 @@
 import { randomUUID } from "node:crypto";
 
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
-export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.2";
-const BOT_AGENT = "agent-autoloop-wechat/0.2.2";
+export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.3";
+const BOT_AGENT = "agent-autoloop-wechat/0.2.3";
 
 function statusCode(parsed: { ret?: number; errcode?: number }) {
   if (typeof parsed.ret === "number" && parsed.ret !== 0) return parsed.ret;

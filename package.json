@@ -1,6 +1,6 @@
 {
   "name": "agent-autoloop-wechat",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": false,
   "description": "微信 ClawBot（iLink）通道，把 agent-autoloop 的卡片发到微信，并用回复序号拍板。",
   "license": "MIT",

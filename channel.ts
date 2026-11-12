@@ -114,7 +114,7 @@ export default async function wechat({ hub, options, log, signal }: Context) {
         const page = await api.getUpdates(session, signal);
         const plan = await applyPage(async () => (await load()) ?? session, page.messages, {
           answer: async (item) => {
-            await hub.answer(item.card, { choice: item.choice, by: item.by, ref: item.ref });
+            await hub.answer(item.card, { choice: item.choice, by: item.by, ref: item.ref, ...(item.text ? { text: item.text } : {}) });
           },
           sendWait: async (contextToken) => {
             await api.sendText(session, session.userId, WAITING, contextToken);

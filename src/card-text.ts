@@ -22,7 +22,7 @@ export function renderCard(card: CardView) {
     card.options.forEach((option, index) => {
       lines.push(`${index + 1}. ${option}${index === card.recommend ? "（推荐）" : ""}`);
     });
-    lines.push("回复序号即可，例如 2。要指定卡片写 #编号 序号。");
+    lines.push(replyRules(card));
   } else {
     const outcome = outcomeOf(card);
     if (outcome) lines.push(outcome);
@@ -57,20 +57,37 @@ export function splitText(text: string, limit = LIMIT) {
 
 export type ParsedAnswer = { card: number; choice?: number; text?: string };
 
+const ANSWER_TEXT = 4000;
+
+/** Printed on every open choice so the reply rules travel with the card. */
+function replyRules(card: CardView) {
+  const n = (card.recommend ?? 0) + 1;
+  const id = card.id;
+  return [
+    "回复规则：",
+    `只拍板：只开着这一张卡时，整句回 ${n}。`,
+    `拍板并补充：#${id} ${n} 后面写你的话。例如 #${id} ${n} 超时只改测试环境。编号就是本卡开头的 #${id}。`,
+    `多张卡同时开着时，只拍板要整句写 #${id} ${n}，不能只回一个数字。`,
+    "日常聊天：2 超时只改测试环境，以及其他句子。这张卡继续等你。",
+    "整句刚好是某个选项的原文，也会拍板。",
+  ].join("\n");
+}
+
 /**
- * A bare number, the option's own words, or `#id n` answers a card.
- * Any other sentence is a new instruction, not an answer.
+ * A bare number, the option's own words, or `#id n` plus optional words answers a card.
+ * A number followed by words, and any other sentence, is a new instruction.
  */
 export function parseAnswer(text: string, open: OpenCard[]): ParsedAnswer | null {
   const words = text.trim();
   if (!words || !open.length) return null;
-  const pointed = /^#(\d+)\s+(\d+)$/.exec(words);
+  const pointed = /^#(\d+)\s+(\d+)(?:\s+([\s\S]+))?$/.exec(words);
   if (pointed) {
     const card = Number(pointed[1]);
     const found = open.find((item) => item.id === card);
     const choice = Number(pointed[2]) - 1;
+    const note = pointed[3]?.trim();
     if (!found || choice < 0 || choice >= found.options.length) return null;
-    return { card, choice };
+    return { card, choice, ...(note ? { text: [...note].slice(0, ANSWER_TEXT).join("") } : {}) };
   }
   if (open.length !== 1) return null;
   const only = open[0];

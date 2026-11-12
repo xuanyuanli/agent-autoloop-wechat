@@ -52,6 +52,19 @@ test("a bare number with two open cards is a new task", () => {
   assert.equal(plan.tasks[0]?.text, "1");
 });
 
+test("a pointed reply can carry a note and does not start a chat", () => {
+  const plan = planMessages(session, [text("m1", "#7 2 超时只改测试环境")]);
+  assert.deepEqual(plan.answers, [{ card: 7, choice: 1, by: user, ref: "wechat-7", text: "超时只改测试环境" }]);
+  assert.equal(plan.tasks.length, 0);
+});
+
+test("a number plus words is a chat task while the card stays open", () => {
+  const plan = planMessages(session, [text("m1", "2 超时只改测试环境")]);
+  assert.equal(plan.answers.length, 0);
+  assert.equal(plan.closed.length, 0);
+  assert.equal(plan.tasks[0]?.text, "2 超时只改测试环境");
+});
+
 test("a pointed reply answers that card", () => {
   const plan = planMessages(
     { ...session, open: [{ id: 7, options: ["保持", "改"], ref: "ref-7" }, { id: 8, options: ["是", "否"], ref: "ref-8" }] },

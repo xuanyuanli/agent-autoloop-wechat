@@ -7,7 +7,7 @@ import type { Held, StoredSession } from "./session.ts";
 export type OpenRef = { id: number; options: string[]; ref?: string };
 
 export type PagePlan = {
-  answers: { card: number; choice: number; by: string; ref: string }[];
+  answers: { card: number; choice: number; by: string; ref: string; text?: string }[];
   waiting: boolean;
   tasks: { id: string; text: string; detail: string }[];
   pending: Held[];
@@ -44,7 +44,7 @@ export function planMessages(session: PageSession, messages: WechatMessage[]): P
       const answer = parseAnswer(inbound.text, [...open.values()]);
       if (answer?.choice !== undefined) {
         const ref = open.get(answer.card)?.ref ?? `wechat-${answer.card}`;
-        answers.push({ card: answer.card, choice: answer.choice, by: inbound.from, ref });
+        answers.push({ card: answer.card, choice: answer.choice, by: inbound.from, ref, ...(answer.text ? { text: answer.text } : {}) });
         open.delete(answer.card);
         closed.push(answer.card);
         if (inbound.media.length) {
