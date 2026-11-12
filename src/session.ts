@@ -6,7 +6,12 @@ export function sessionPath(home = process.env.AGENT_AUTOLOOP_HOME || path.join(
   return path.join(home, "wechat-session.json");
 }
 
-export type StoredSession = Session & { open?: { id: number; options: string[] }[]; contextToken?: string };
+export type Held = { kind: string; name?: string; note?: string };
+export type StoredSession = Session & {
+  open?: { id: number; options: string[] }[];
+  contextToken?: string;
+  pending?: Held[];
+};
 
 export function readSession(file: string): StoredSession | null {
   try {
@@ -20,6 +25,7 @@ export function readSession(file: string): StoredSession | null {
       cursor: parsed.cursor ?? "",
       ...(Array.isArray(parsed.open) ? { open: parsed.open } : {}),
       ...(parsed.contextToken ? { contextToken: parsed.contextToken } : {}),
+      ...(Array.isArray(parsed.pending) ? { pending: parsed.pending } : {}),
     };
   } catch {
     return null;

@@ -32,8 +32,8 @@ test("several open cards need an explicit id", () => {
   assert.deepEqual(parseAnswer("#4 1", open), { card: 4, choice: 0 });
 });
 
-test("free text answers the only open card", () => {
-  assert.deepEqual(parseAnswer("先不改代码", [{ id: 8, options: ["改", "不改"] }]), { card: 8, text: "先不改代码" });
+test("a sentence is not a card answer", () => {
+  assert.equal(parseAnswer("先不改代码", [{ id: 8, options: ["改", "不改"] }]), null);
 });
 
 test("long text breaks on a paragraph", () => {

@@ -58,8 +58,8 @@ export function splitText(text: string, limit = LIMIT) {
 export type ParsedAnswer = { card: number; choice?: number; text?: string };
 
 /**
- * A bare number answers the only open card. `#id n` picks one of several.
- * Anything else, when exactly one ask is open, is a free-text answer.
+ * A bare number, the option's own words, or `#id n` answers a card.
+ * Any other sentence is a new instruction, not an answer.
  */
 export function parseAnswer(text: string, open: OpenCard[]): ParsedAnswer | null {
   const words = text.trim();
@@ -81,5 +81,5 @@ export function parseAnswer(text: string, open: OpenCard[]): ParsedAnswer | null
   }
   const matched = only.options.findIndex((option) => option === words);
   if (matched >= 0) return { card: only.id, choice: matched };
-  return { card: only.id, text: words };
+  return null;
 }

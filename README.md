@@ -31,6 +31,14 @@ node ~/.agent-autoloop/plugins/agent-autoloop-wechat/bin/login.ts
 
 改完 `config.json` 后运行 `agent-autoloop service install`，让中台重新加载插件。
 
+## 日常对话
+
+文字消息会交给中台来源 `local` 的事件 `wechat.message`。配一条 `resume: true` 的规则，派给默认 Agent，就能接着上一轮 Cursor 会话。
+
+图片、语音、文件、视频不会单独开工。通道先回复「等待后续文字指令」，把这些说明攒着；下一条文字到来时，说明和文字合成一条任务。
+
+回复序号仍然只用于回答已经打开的卡片。普通句子不会被当成卡片答案。
+
 ## 怎么回复
 
 一张未决卡片长这样：

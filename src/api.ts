@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
-export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.1.0";
+export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.0";
 const BOT_AGENT = "agent-autoloop-wechat/0.1.0";
 
 export type WechatMessage = {
@@ -11,7 +11,15 @@ export type WechatMessage = {
   message_state?: number;
   from_user_id?: string;
   context_token?: string;
-  item_list?: { type?: number; text_item?: { text?: string } }[];
+  message_id?: number | string;
+  client_id?: string;
+  create_time_ms?: number;
+  item_list?: {
+    type?: number;
+    text_item?: { text?: string };
+    voice_item?: { text?: string };
+    file_item?: { file_name?: string };
+  }[];
 };
 
 export type Session = {
