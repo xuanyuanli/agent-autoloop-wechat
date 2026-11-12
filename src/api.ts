@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
-export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.0";
+export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.1";
 const BOT_AGENT = "agent-autoloop-wechat/0.1.0";
 
 export type WechatMessage = {

@@ -33,7 +33,7 @@ node ~/.agent-autoloop/plugins/agent-autoloop-wechat/bin/login.ts
 
 ## 日常对话
 
-文字消息会交给中台来源 `local` 的事件 `wechat.message`。配一条 `resume: true` 的规则，派给默认 Agent，就能接着上一轮 Cursor 会话。
+文字消息会交给中台来源 `local` 的事件 `wechat.message`。规则名是「微信对话」时，8 小时内的下一句接着同一个 Cursor 会话；从上一次开口算起超过 8 小时，再开口就是新会话。别的规则（比如每天的巡检）不受这个时限影响。
 
 图片、语音、文件、视频不会单独开工。通道先回复「等待后续文字指令」，把这些说明攒着；下一条文字到来时，说明和文字合成一条任务。
 
