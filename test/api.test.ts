@@ -41,6 +41,21 @@ test("a rate limit is retried and then the text is sent", async () => {
   assert.equal(attempts, 2);
 });
 
+test("typing uses the ticket from getconfig and does not retry a rate limit", async () => {
+  const { api, calls } = client((url) => {
+    if (url.includes("getconfig")) return JSON.stringify({ ret: 0, typing_ticket: "ticket-1" });
+    return JSON.stringify({ errcode: -2 });
+  });
+  assert.equal(await api.typingTicket(session, "ctx"), "ticket-1");
+  await assert.rejects(() => api.sendTyping(session, "ticket-1", 1), /sendtyping -2/);
+  const typing = calls.find((call) => call.url.includes("sendtyping"));
+  const body = JSON.parse(typing?.body ?? "{}") as { status?: number; typing_ticket?: string; ilink_user_id?: string };
+  assert.equal(body.status, 1);
+  assert.equal(body.typing_ticket, "ticket-1");
+  assert.equal(body.ilink_user_id, "user-1");
+  assert.equal(calls.filter((call) => call.url.includes("sendtyping")).length, 1);
+});
+
 test("a paused context token is sent once more without it", async () => {
   const { api, calls } = client((_url, body) => {
     const parsed = JSON.parse(body) as { msg?: { context_token?: string } };

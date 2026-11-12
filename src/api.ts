@@ -3,8 +3,8 @@
 import { randomUUID } from "node:crypto";
 
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
-export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.4";
-const BOT_AGENT = "agent-autoloop-wechat/0.2.4";
+export const CHANNEL_VERSION = "3.0.1/agent-autoloop-wechat-0.2.5";
+const BOT_AGENT = "agent-autoloop-wechat/0.2.5";
 
 function statusCode(parsed: { ret?: number; errcode?: number }) {
   if (typeof parsed.ret === "number" && parsed.ret !== 0) return parsed.ret;
@@ -170,6 +170,38 @@ export function createClient(fetchImpl: FetchLike = globalThis.fetch, wait: (ms:
         throw new Error(`sendmessage ${code} ${parsed.errmsg ?? ""}`.trim());
       }
       throw new Error("sendmessage 没有发出去");
+    },
+    async typingTicket(session: Session, contextToken?: string) {
+      const raw = await post(
+        session.baseUrl,
+        "ilink/bot/getconfig",
+        JSON.stringify({
+          ilink_user_id: session.userId,
+          ...(contextToken ? { context_token: contextToken } : {}),
+          base_info: baseInfo,
+        }),
+        session.token,
+        10_000,
+      );
+      if (!raw) return "";
+      const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string; typing_ticket?: string };
+      const code = statusCode(parsed);
+      if (code !== 0) throw new Error(`getconfig ${code} ${parsed.errmsg ?? ""}`.trim());
+      return parsed.typing_ticket ?? "";
+    },
+    /** status 1 shows「对方正在输入」, status 2 clears it. One attempt; the caller refreshes the ticket. */
+    async sendTyping(session: Session, ticket: string, status: 1 | 2) {
+      const raw = await post(
+        session.baseUrl,
+        "ilink/bot/sendtyping",
+        JSON.stringify({ ilink_user_id: session.userId, typing_ticket: ticket, status, base_info: baseInfo }),
+        session.token,
+        10_000,
+      );
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string };
+      const code = statusCode(parsed);
+      if (code !== 0) throw new Error(`sendtyping ${code} ${parsed.errmsg ?? ""}`.trim());
     },
   };
 }

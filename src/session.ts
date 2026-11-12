@@ -8,7 +8,7 @@ export function sessionPath(home = process.env.AGENT_AUTOLOOP_HOME || path.join(
 
 export type Held = { kind: string; name?: string; note?: string };
 export type StoredSession = Session & {
-  open?: { id: number; options: string[]; ref?: string }[];
+  open?: { id: number; options: string[]; ref?: string; rule?: string }[];
   contextToken?: string;
   pending?: Held[];
 };

@@ -4,8 +4,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createClient } from "./src/api.ts";
 import { renderCard, splitText, type CardView } from "./src/card-text.ts";
+import { CHAT_RULE } from "./src/chat-session.ts";
 import { applyPage, trackDelivery } from "./src/page.ts";
 import { readSession, sessionPath, writeSession, type StoredSession } from "./src/session.ts";
+import { finishLease, leaseExpired, startLease, TICKET_TTL_MS, TYPING_INTERVAL_MS, type TypingLease } from "./src/typing.ts";
 
 const WAITING = "等待后续文字指令";
 
@@ -21,7 +23,7 @@ function updateSession(file: string, change: (session: StoredSession) => void) {
   return run;
 }
 
-type Card = CardView & { version: number; ref: string | null };
+type Card = CardView & { version: number; ref: string | null; rule?: string | null };
 type Context = {
   hub: {
     nextCard(wait: number): Promise<{ card: Card | null }>;
@@ -47,7 +49,116 @@ const sleep = (ms: number, signal: AbortSignal) =>
 export default async function wechat({ hub, options, log, signal }: Context) {
   const file = typeof options.session === "string" ? options.session : sessionPath();
   const api = createClient();
+  const typing = createTyping();
+  signal.addEventListener("abort", () => void typing.hide(), { once: true });
   await Promise.all([deliver(), receive()]);
+
+  /** 「对方正在输入」. Failures stay here and never fail the message itself. */
+  function createTyping() {
+    let lease: TypingLease | null = null;
+    let ticket: { value: string; at: number } | null = null;
+    let chain: Promise<void> = Promise.resolve();
+    let timer: NodeJS.Timeout | null = null;
+    let problem = "";
+    let token: string | undefined;
+
+    function remember(rule: string, contextToken?: string) {
+      if (contextToken) token = contextToken;
+      const starting = !lease;
+      lease = startLease(lease, rule, Date.now(), contextToken);
+      if (starting) void show(1);
+      if (!timer) {
+        timer = setInterval(() => void keepalive(), TYPING_INTERVAL_MS);
+        timer.unref?.();
+      }
+    }
+
+    function settle(rule: string | null | undefined) {
+      if (!rule || !lease?.rules.includes(rule)) return;
+      lease = finishLease(lease, rule);
+      if (!lease) void hide();
+    }
+
+    async function keepalive() {
+      if (!lease) return;
+      if (leaseExpired(lease, Date.now())) {
+        lease = null;
+        await hide();
+        return;
+      }
+      await show(1);
+    }
+
+    async function show(status: 1 | 2) {
+      const run = chain.then(() => push(status));
+      chain = run.then(() => undefined, () => undefined);
+      await run;
+    }
+
+    async function hide() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      await show(2);
+    }
+
+    async function push(status: 1 | 2) {
+      const session = await load();
+      if (!session) return;
+      try {
+        const value = await currentTicket(session, false);
+        if (!value) return;
+        await api.sendTyping(session, value, status);
+        problem = "";
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("-2")) return;
+        try {
+          const value = await currentTicket(session, true);
+          if (!value) return;
+          await api.sendTyping(session, value, status);
+          problem = "";
+        } catch (again) {
+          const text = again instanceof Error ? again.message : String(again);
+          if (text !== problem) {
+            problem = text;
+            log(`输入状态没亮起来：${text}`);
+          }
+        }
+      }
+    }
+
+    async function currentTicket(session: StoredSession, force: boolean) {
+      const hold = ticket?.value ? TICKET_TTL_MS : 60_000;
+      if (!force && ticket && Date.now() - ticket.at < hold) return ticket.value;
+      const value = await api.typingTicket(session, token ?? session.contextToken);
+      ticket = { value, at: Date.now() };
+      if (!value) note("没有拿到 typing_ticket");
+      return value;
+    }
+
+    function note(text: string) {
+      if (text === problem) return;
+      problem = text;
+      log(`输入状态没亮起来：${text}`);
+    }
+
+    return {
+      remember,
+      settle,
+      hide,
+      async flash(contextToken?: string) {
+        if (lease) return;
+        if (contextToken) token = contextToken;
+        await show(1);
+        return async () => {
+          if (!lease) await hide();
+        };
+      },
+      expects(rule: string) {
+        return Boolean(lease?.rules.includes(rule));
+      },
+    };
+  }
 
   async function load(): Promise<StoredSession | null> {
     return readSession(file);
@@ -74,6 +185,7 @@ export default async function wechat({ hub, options, log, signal }: Context) {
       }
       const before = (await load())?.open ?? [];
       const added = card.state === "open" && !before.some((item) => item.id === card.id);
+      let sent = false;
       try {
         await updateSession(file, (fresh) => {
           fresh.open = trackDelivery(fresh.open, card);
@@ -85,6 +197,7 @@ export default async function wechat({ hub, options, log, signal }: Context) {
               await api.sendText(session, session.userId, part, session.contextToken);
               await sleep(2_000, signal);
             }
+            sent = true;
           } catch (error) {
             if (added) {
               await updateSession(file, (fresh) => {
@@ -95,7 +208,9 @@ export default async function wechat({ hub, options, log, signal }: Context) {
           }
         }
         await hub.delivered(card.id, card.version, card.ref ?? `wechat-${card.id}`);
+        if (sent) typing.settle(card.rule);
       } catch (error) {
+        typing.settle(card.rule);
         const message = error instanceof Error ? error.message : String(error);
         log(`卡片 ${card.id} 没发出去：${message}`);
         await hub.failed(card.id, card.version, message).catch(() => {});
@@ -113,14 +228,27 @@ export default async function wechat({ hub, options, log, signal }: Context) {
       try {
         const page = await api.getUpdates(session, signal);
         const plan = await applyPage(async () => (await load()) ?? session, page.messages, {
-          answer: async (item) => {
+          answer: async (item, contextToken) => {
             await hub.answer(item.card, { choice: item.choice, by: item.by, ref: item.ref, ...(item.text ? { text: item.text } : {}) });
+            if (item.rule) typing.remember(item.rule, contextToken);
           },
           sendWait: async (contextToken) => {
-            await api.sendText(session, session.userId, WAITING, contextToken);
+            const done = await typing.flash(contextToken);
+            try {
+              await api.sendText(session, session.userId, WAITING, contextToken);
+            } finally {
+              await done?.();
+            }
           },
-          emit: async (task) => {
-            await emit(task, options);
+          emit: async (task, contextToken) => {
+            const first = !typing.expects(CHAT_RULE);
+            typing.remember(CHAT_RULE, contextToken);
+            try {
+              await emit(task, options);
+            } catch (error) {
+              if (first) typing.settle(CHAT_RULE);
+              throw error;
+            }
           },
         });
         await updateSession(file, (fresh) => {

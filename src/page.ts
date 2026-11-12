@@ -4,10 +4,10 @@ import { parseAnswer } from "./card-text.ts";
 import { composeTask, inboundMessage } from "./inbound.ts";
 import type { Held, StoredSession } from "./session.ts";
 
-export type OpenRef = { id: number; options: string[]; ref?: string };
+export type OpenRef = { id: number; options: string[]; ref?: string; rule?: string };
 
 export type PagePlan = {
-  answers: { card: number; choice: number; by: string; ref: string; text?: string }[];
+  answers: { card: number; choice: number; by: string; ref: string; text?: string; rule?: string }[];
   waiting: boolean;
   tasks: { id: string; text: string; detail: string }[];
   pending: Held[];
@@ -18,11 +18,14 @@ export type PagePlan = {
 type PageSession = Pick<StoredSession, "userId" | "open" | "pending" | "contextToken">;
 
 /** Record a card before it is sent, so a reply in the same poll still matches it. */
-export function trackDelivery(open: OpenRef[] | undefined, card: { id: number; state: string; options: string[]; ref: string | null }): OpenRef[] {
+export function trackDelivery(
+  open: OpenRef[] | undefined,
+  card: { id: number; state: string; options: string[]; ref: string | null; rule?: string | null },
+): OpenRef[] {
   const list = open ?? [];
   if (card.state === "open") {
     const ref = card.ref ?? `wechat-${card.id}`;
-    return [...list.filter((item) => item.id !== card.id), { id: card.id, options: card.options, ref }];
+    return [...list.filter((item) => item.id !== card.id), { id: card.id, options: card.options, ref, ...(card.rule ? { rule: card.rule } : {}) }];
   }
   return list.filter((item) => item.id !== card.id);
 }
@@ -43,8 +46,16 @@ export function planMessages(session: PageSession, messages: WechatMessage[]): P
     if (inbound.text) {
       const answer = parseAnswer(inbound.text, [...open.values()]);
       if (answer?.choice !== undefined) {
-        const ref = open.get(answer.card)?.ref ?? `wechat-${answer.card}`;
-        answers.push({ card: answer.card, choice: answer.choice, by: inbound.from, ref, ...(answer.text ? { text: answer.text } : {}) });
+        const found = open.get(answer.card);
+        const ref = found?.ref ?? `wechat-${answer.card}`;
+        answers.push({
+          card: answer.card,
+          choice: answer.choice,
+          by: inbound.from,
+          ref,
+          ...(answer.text ? { text: answer.text } : {}),
+          ...(found?.rule ? { rule: found.rule } : {}),
+        });
         open.delete(answer.card);
         closed.push(answer.card);
         if (inbound.media.length) {
@@ -67,9 +78,9 @@ export function planMessages(session: PageSession, messages: WechatMessage[]): P
 }
 
 export type PageIo = {
-  answer: (item: PagePlan["answers"][number]) => Promise<void>;
+  answer: (item: PagePlan["answers"][number], contextToken?: string) => Promise<void>;
   sendWait: (contextToken?: string) => Promise<void>;
-  emit: (task: PagePlan["tasks"][number]) => Promise<void>;
+  emit: (task: PagePlan["tasks"][number], contextToken?: string) => Promise<void>;
 };
 
 /**
@@ -78,8 +89,8 @@ export type PageIo = {
  */
 export async function applyPage(load: () => Promise<PageSession>, messages: WechatMessage[], io: PageIo): Promise<PagePlan> {
   const plan = planMessages(await load(), messages);
-  for (const item of plan.answers) await io.answer(item);
+  for (const item of plan.answers) await io.answer(item, plan.contextToken);
   if (plan.waiting) await io.sendWait(plan.contextToken);
-  for (const task of plan.tasks) await io.emit(task);
+  for (const task of plan.tasks) await io.emit(task, plan.contextToken);
   return plan;
 }
