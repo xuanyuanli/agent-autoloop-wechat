@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { splitText } from "./card-text.ts";
 import { decideChat, isChatPrompt, type ChatStamp } from "./chat-session.ts";
 
 export type Turn = {
@@ -15,9 +16,17 @@ export type Turn = {
   contextFile: string;
 };
 
+export type Usage = {
+  input?: number;
+  output?: number;
+  cached?: number;
+  cost?: number;
+};
+
 export type Reading = {
   text?: string;
   session?: string;
+  usage?: Usage;
   error?: string;
   started?: boolean;
   finished?: boolean;
@@ -28,6 +37,9 @@ type Clock = { home?: string; now?: number };
 const MAX_PENDING_CHATS = 64;
 const LOST_SESSION = /\b(?:session|chat|conversation)\b[^\n]*(?:not found|does not exist|invalid|unknown|missing)|找不到.*会话|会话不存在/i;
 const PLACEHOLDER = /\{(prompt|model|effort|cwd|context)\}/g;
+const RECEIPT_BLOCK = /(?<=^|\n)[ \t]*```agent-autoloop[ \t]*\r?\n((?:[^\n]*\n)*?)[ \t]*```[ \t]*(?=\r?\n|$)/g;
+const RECEIPT_FENCE = /(?<=^|\n)[ \t]*```(?:agent-autoloop|json)[ \t]*\r?\n/;
+const SPECIAL_OUTCOME = /^(?:没跑成|FAILED|没事可做|NOTHING|待你处理)(?:$|[\s:：])/;
 
 const POWERSHELL = path.join(
   process.env.SystemRoot ?? "C:\\Windows",
@@ -88,7 +100,7 @@ function spokenPrompt(prompt: string) {
   }
   return (
     `${prompt}\n\n` +
-    "上面关于中台怎么结束这一轮的说明，不要写进发给人的正文。发给人的只有回执里的 notice 和 ask。" +
+    "上面关于中台怎么结束这一轮的说明，不要写进发给人的正文。若本规则禁止发 notice 和 ask，严格只发 events；否则发给人的只有回执里的 notice 和 ask。" +
     "notice 的 text 用 Markdown：小标题用 **，节与节之间空一行再写 ---，列表用 - 。微信会把单个换行收成空格。不要把排查过程写进 notice。"
   );
 }
@@ -164,44 +176,218 @@ export function commandLine(turn: Turn, clock: Clock = {}) {
   if (isChatPrompt(turn.prompt)) trackPendingChat(path.dirname(turn.contextFile), { at: now, home });
   const extra: string[] = [];
   if (decision.resume && !args.includes("--resume")) extra.push("--resume", decision.resume);
-  if (!args.includes("--output-format")) extra.push("--output-format", "json");
+  // `stream-json` separates each assistant segment around tool calls; plain `json` concatenates pre-tool thoughts onto line 1.
+  if (!args.includes("--output-format")) extra.push("--output-format", "stream-json");
   const at = args.lastIndexOf("-p");
   args.splice(at === -1 ? Math.max(args.length - 1, 0) : at, 0, ...extra);
   return args;
 }
 
-type CursorResult = { result?: string; session_id?: string; is_error?: boolean };
+type CursorResult = { result?: string; session_id?: string; is_error?: boolean; usage?: Usage };
+
+type StreamState = {
+  sawStream: boolean;
+  sessionId?: string;
+  isChatFromStream: boolean;
+  currentSegment: string;
+  priorSegments: string[];
+  carriedReceipts: string[];
+  resultEvent?: CursorResult;
+};
+
+function messageText(message: unknown): string {
+  if (!message || typeof message !== "object") return "";
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const typed = part as { type?: unknown; text?: unknown };
+      return (typed.type === "text" || typed.type === undefined) && typeof typed.text === "string" ? typed.text : "";
+    })
+    .join("");
+}
+
+function extractUsage(raw: unknown): Usage | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const item = raw as Record<string, unknown>;
+  const cacheRead = typeof item.cacheReadTokens === "number" ? item.cacheReadTokens : 0;
+  const cacheWrite = typeof item.cacheWriteTokens === "number" ? item.cacheWriteTokens : 0;
+  const cached = cacheRead + cacheWrite;
+  const usage: Usage = {};
+  if (typeof item.inputTokens === "number") usage.input = item.inputTokens + cached;
+  if (typeof item.outputTokens === "number") usage.output = item.outputTokens;
+  if (typeof item.cacheReadTokens === "number" || typeof item.cacheWriteTokens === "number") usage.cached = cached;
+  return Object.keys(usage).length ? usage : undefined;
+}
+
+function lastReceiptBlock(text: string): string | undefined {
+  return [...text.matchAll(RECEIPT_BLOCK)].at(-1)?.[0];
+}
+
+function parseStream(stdout: string): StreamState {
+  const state: StreamState = {
+    sawStream: false,
+    isChatFromStream: false,
+    currentSegment: "",
+    priorSegments: [],
+    carriedReceipts: [],
+  };
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line.startsWith("{") || !line.endsWith("}")) continue;
+    let event: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      event = parsed as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const sid =
+      typeof event.session_id === "string" && event.session_id
+        ? event.session_id
+        : typeof event.sessionId === "string" && event.sessionId
+          ? event.sessionId
+          : undefined;
+    if (sid) state.sessionId = sid;
+
+    const kind = event.type;
+    if (kind === "system") {
+      state.sawStream = true;
+      if (event.subtype === "task_notification") {
+        const receipt = lastReceiptBlock(state.currentSegment);
+        if (receipt) state.carriedReceipts.push(receipt);
+        if (state.currentSegment.trim()) state.priorSegments.push(state.currentSegment);
+        state.currentSegment = "";
+      }
+    } else if (kind === "user") {
+      state.sawStream = true;
+      const text = messageText(event.message);
+      if (text && isChatPrompt(text)) state.isChatFromStream = true;
+    } else if (kind === "assistant") {
+      state.sawStream = true;
+      const chunk = messageText(event.message) || (typeof event.text === "string" ? event.text : "");
+      state.currentSegment += chunk;
+    } else if (kind === "tool_call") {
+      state.sawStream = true;
+      if (event.subtype === "started" || event.subtype === undefined) {
+        if (state.currentSegment.trim()) state.priorSegments.push(state.currentSegment);
+        state.currentSegment = "";
+      }
+    } else if (kind === "retry") {
+      state.sawStream = true;
+      if (event.subtype === "starting" && event.is_resume !== true) {
+        state.currentSegment = "";
+      }
+    } else if (kind === "thinking" || kind === "usage" || kind === "connection" || kind === "interaction_query") {
+      state.sawStream = true;
+    } else if (kind === "result") {
+      const normalized = normalize(event);
+      if (normalized) state.resultEvent = normalized;
+    }
+  }
+  return state;
+}
+
+/**
+ * If a multi-line WeChat chat reply has no explicit receipt block, wrap the full Markdown into an `fyi: true`
+ * notice so `worker/contract.ts` does not drop everything after line 1.
+ */
+function maybeWrapChat(text: string, isChat: boolean): string {
+  if (!isChat) return text;
+  const trimmed = text.trim();
+  if (!trimmed || !trimmed.includes("\n")) return text;
+  if (RECEIPT_FENCE.test(trimmed)) return text;
+  const lines = trimmed.split(/\r?\n/);
+  const firstNonEmpty = lines.map((line) => line.trim()).find(Boolean) ?? "";
+  const plainHead = firstNonEmpty.replace(/^[#>*\s]+/, "").replace(/\*\*/g, "").trim();
+  if (!plainHead || SPECIAL_OUTCOME.test(plainHead)) return text;
+
+  const chunks = splitText(trimmed, 3800).slice(0, 10);
+  const notices = chunks.map((chunk) => {
+    const chunkFirst = chunk.split(/\r?\n/)[0]?.trim() ?? "";
+    let title = [...chunkFirst].slice(0, 150).join("").trim() || "微信回复";
+    if (title === "回复") title = "微信回复";
+    return { title, text: chunk, fyi: true };
+  });
+  const summaryLine = [...plainHead].slice(0, 200).join("");
+  return `${summaryLine}\n\n\`\`\`agent-autoloop\n${JSON.stringify({ notice: notices })}\n\`\`\``;
+}
 
 export function readOutput(stdout: string, code: number | null, stderr: string): Reading {
-  const parsed = cursorResult(stdout);
+  const stream = parseStream(stdout);
+  const legacy = stream.sawStream ? null : cursorResult(stdout);
+  const sessionId = stream.sessionId ?? stream.resultEvent?.session_id ?? legacy?.session_id;
+  const resultObj = stream.sawStream ? stream.resultEvent : legacy;
+
+  let isChat = stream.isChatFromStream;
   for (const [dir, entry] of pendingChats) {
     if (!stdoutBelongs(dir, stdout)) continue;
-    if (code === 0 && parsed?.session_id) writeStamp({ id: parsed.session_id, at: entry.at }, entry.home);
+    isChat = true;
+    if (code === 0 && sessionId && !resultObj?.is_error) writeStamp({ id: sessionId, at: entry.at }, entry.home);
     if (code !== null) pendingChats.delete(dir);
     break;
   }
-  const session = parsed?.session_id ? { session: parsed.session_id } : {};
+
+  const session = sessionId ? { session: sessionId } : {};
+  const usage = resultObj?.usage ? { usage: resultObj.usage } : {};
+
+  if (stream.sawStream) {
+    if (!stream.resultEvent) {
+      if (code === null) return { started: true, ...session };
+      const tail = (stderr || stdout).trim().slice(-500);
+      if (code !== 0) {
+        const lost = LOST_SESSION.test(tail);
+        return { started: !lost, ...session, error: `退出码 ${code}：${tail || "没留下原因"}` };
+      }
+      const fallback = stream.currentSegment.trim() ? stream.currentSegment : (stream.priorSegments.at(-1) ?? "");
+      if (!fallback.trim()) return { started: true, ...session, error: tail || "没留下结果" };
+      return { text: maybeWrapChat(fallback, isChat), started: true, finished: true, ...session };
+    }
+
+    if (code !== null && code !== 0) {
+      const tail = (stderr || stream.resultEvent.result || stdout).trim().slice(-500);
+      const lost = LOST_SESSION.test(tail);
+      return { started: !lost, ...session, ...usage, error: `退出码 ${code}：${tail || "没留下原因"}` };
+    }
+    if (stream.resultEvent.is_error) {
+      const detail = stream.resultEvent.result || "Cursor 返回错误";
+      return { started: !LOST_SESSION.test(detail), finished: true, error: detail, ...session, ...usage };
+    }
+    let answer = stream.currentSegment.trim()
+      ? stream.currentSegment
+      : (stream.priorSegments.at(-1) ?? stream.resultEvent.result ?? "");
+    if (!RECEIPT_FENCE.test(answer) && stream.carriedReceipts.length > 0) {
+      answer = `${answer.trimEnd()}\n\n${stream.carriedReceipts.at(-1)}`;
+    }
+    answer = maybeWrapChat(answer, isChat);
+    if (!answer.trim()) return { started: true, finished: true, error: "没留下结果", ...session, ...usage };
+    return { text: answer, started: true, finished: true, ...session, ...usage };
+  }
+
   if (code === null) {
-    if (parsed?.result !== undefined) {
-      if (parsed.is_error) return { started: true, finished: true, error: parsed.result || "Cursor 返回错误", ...session };
-      return { text: parsed.result, started: true, finished: true, ...session };
+    if (legacy?.result !== undefined) {
+      if (legacy.is_error) return { started: true, finished: true, error: legacy.result || "Cursor 返回错误", ...session, ...usage };
+      return { text: maybeWrapChat(legacy.result, isChat), started: true, finished: true, ...session, ...usage };
     }
     return { started: true, ...session };
   }
   const tail = (stderr || stdout).trim().slice(-500);
   if (code !== 0) {
     const lost = LOST_SESSION.test(tail);
-    return { started: !lost, ...session, error: `退出码 ${code}：${tail || "没留下原因"}` };
+    return { started: !lost, ...session, ...usage, error: `退出码 ${code}：${tail || "没留下原因"}` };
   }
-  if (!parsed) {
+  if (!legacy) {
     if (!stdout.trim()) return { started: true, error: tail || "没留下结果" };
-    return { text: stdout, started: true, finished: true };
+    return { text: maybeWrapChat(stdout, isChat), started: true, finished: true };
   }
-  if (parsed.is_error) {
-    const detail = parsed.result || "Cursor 返回错误";
-    return { started: !LOST_SESSION.test(detail), finished: true, error: detail, ...session };
+  if (legacy.is_error) {
+    const detail = legacy.result || "Cursor 返回错误";
+    return { started: !LOST_SESSION.test(detail), finished: true, error: detail, ...session, ...usage };
   }
-  return { text: parsed.result ?? stdout, started: true, finished: true, ...session };
+  return { text: maybeWrapChat(legacy.result ?? stdout, isChat), started: true, finished: true, ...session, ...usage };
 }
 
 export function checkCursor(program?: string, home = homeDir()): string | null {
@@ -232,6 +418,7 @@ export function checkCursor(program?: string, home = homeDir()): string | null {
 
 function stdoutBelongs(dir: string, stdout: string) {
   if (!stdout) return false;
+  const head = stdout.slice(0, 4096);
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -242,7 +429,7 @@ function stdoutBelongs(dir: string, stdout: string) {
     if (!name.startsWith("stdout-")) return false;
     try {
       const body = readFileSync(path.join(dir, name), "utf8");
-      return body === stdout || body.startsWith(stdout);
+      return body === stdout || body.startsWith(stdout) || (stdout.length > 4096 && body.startsWith(head));
     } catch {
       return false;
     }
@@ -269,10 +456,16 @@ function normalize(value: Record<string, unknown>): CursorResult | null {
   const result = value.result ?? value.text;
   const session = value.session_id ?? value.sessionId;
   if (typeof result !== "string" && typeof session !== "string") return null;
+  const isError =
+    value.is_error === true ||
+    value.isError === true ||
+    (typeof value.subtype === "string" && value.subtype !== "success");
+  const usage = extractUsage(value.usage);
   return {
     ...(typeof result === "string" ? { result } : {}),
     ...(typeof session === "string" ? { session_id: session } : {}),
-    ...(value.is_error === true || value.isError === true ? { is_error: true } : {}),
+    ...(isError ? { is_error: true } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 

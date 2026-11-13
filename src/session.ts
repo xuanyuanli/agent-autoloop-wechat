@@ -10,16 +10,32 @@ export function sessionPath(
 }
 
 export type Held = { kind: string; name?: string; note?: string };
+export type SpokenRun = { id: number; rule: string; createdAt: string };
 export type StoredSession = Session & {
   open?: { id: number; options: string[]; ref?: string; rule?: string }[];
   contextToken?: string;
   pending?: Held[];
+  spoken?: SpokenRun[];
 };
+
+function parseSpoken(raw: unknown): SpokenRun[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw.filter(
+    (item): item is SpokenRun =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      typeof (item as SpokenRun).id === "number" &&
+      typeof (item as SpokenRun).rule === "string" &&
+      typeof (item as SpokenRun).createdAt === "string",
+  );
+  return items.length ? items : undefined;
+}
 
 function parseSession(raw: string): StoredSession | null {
   try {
     const parsed = JSON.parse(raw) as Partial<StoredSession>;
     if (!parsed.token || !parsed.baseUrl || !parsed.userId || !parsed.botId) return null;
+    const spoken = parseSpoken(parsed.spoken);
     return {
       token: parsed.token,
       baseUrl: parsed.baseUrl,
@@ -29,6 +45,7 @@ function parseSession(raw: string): StoredSession | null {
       ...(Array.isArray(parsed.open) ? { open: parsed.open } : {}),
       ...(parsed.contextToken ? { contextToken: parsed.contextToken } : {}),
       ...(Array.isArray(parsed.pending) ? { pending: parsed.pending } : {}),
+      ...(spoken ? { spoken } : {}),
     };
   } catch {
     return null;
@@ -66,6 +83,7 @@ export function sessionFromLogin(
     ...(existing && same && existing.contextToken ? { contextToken: existing.contextToken } : {}),
     ...(existing && same && existing.open?.length ? { open: existing.open } : {}),
     ...(existing && same && existing.pending?.length ? { pending: existing.pending } : {}),
+    ...(existing && same && existing.spoken?.length ? { spoken: existing.spoken } : {}),
   };
 }
 

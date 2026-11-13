@@ -54,7 +54,6 @@ test("channel delivers open ask, answers from WeChat reply, lights typing, and s
     getUpdates: async () => {
       pollPhase += 1;
       if (pollPhase === 1) {
-        // Wait briefly until deliver() has tracked and sent card #11
         while (delivered.length < 1 && !controller.signal.aborted) {
           await new Promise((r) => setTimeout(r, 5));
         }
@@ -136,7 +135,6 @@ test("channel delivers open ask, answers from WeChat reply, lights typing, and s
   ]);
   assert.match(sentTexts[0] ?? "", /\*\*要扩容吗\*\*/);
   assert.equal(sentTexts[1], "已执行：已扩容 1 台");
-  // First ticket expired -> refreshed to ticket-2 and lit status 1, then settled with status 2
   assert.equal(typingStates[0]?.ticket, "ticket-2");
   assert.equal(typingStates[0]?.status, 1);
   assert.equal(typingStates.some((item) => item.status === 2), true);
@@ -145,6 +143,101 @@ test("channel delivers open ask, answers from WeChat reply, lights typing, and s
   assert.equal(saved?.cursor, "cur-1");
   assert.equal(saved?.contextToken, "ctx-live");
   assert.deepEqual(saved?.open, []);
+});
+
+test("channel suppresses duplicate tell:always summary card when the same run already sent a receipt notice", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "wx-dedup-"));
+  const sessionFile = path.join(home, "wechat-session.json");
+  await writeSessionAsync(sessionFile, baseSession);
+
+  const controller = new AbortController();
+  const sentTexts: string[] = [];
+  const deliveredIds: number[] = [];
+  const createdAt = "2026-11-12T08:21:15.975Z";
+  let step = 0;
+
+  const api: WechatClient = {
+    fetchQr: async () => ({ qrcode: "q", image: "img" }),
+    pollQr: async () => ({ status: "wait" }),
+    getUpdates: async () => {
+      await new Promise((r) => controller.signal.addEventListener("abort", r, { once: true }));
+      return { messages: [], cursor: undefined };
+    },
+    sendText: async (_s, _to, text) => {
+      sentTexts.push(text);
+    },
+    typingTicket: async () => "tk",
+    sendTyping: async () => {},
+  };
+
+  await wechat(
+    {
+      hub: {
+        nextCard: async () => {
+          step += 1;
+          if (step === 1) {
+            // Card #16: multi-line receipt notice from WeChat chat run
+            return {
+              card: {
+                id: 16,
+                version: 1,
+                ref: null,
+                kind: "notice",
+                state: "closed",
+                title: "今天下午主要改了买家回访和 App 下载页。",
+                text: "今天这几件：\n- 买家回访改单选\n- App 下载页切官网",
+                options: [],
+                recommend: null,
+                choice: null,
+                answer: null,
+                result: null,
+                rule: "微信对话",
+                createdAt,
+              },
+            };
+          }
+          if (step === 2) {
+            // Card #17: automatic `run:15:done` summary card created by `tell: "always"` in the same decision
+            return {
+              card: {
+                id: 17,
+                version: 1,
+                ref: null,
+                kind: "notice",
+                state: "closed",
+                title: "微信对话",
+                text: "今天下午主要改了买家回访和 App 下载页。",
+                options: [],
+                recommend: null,
+                choice: null,
+                answer: null,
+                result: null,
+                rule: "微信对话",
+                createdAt,
+              },
+            };
+          }
+          controller.abort();
+          return { card: null };
+        },
+        delivered: async (id) => {
+          deliveredIds.push(id);
+        },
+        failed: async () => {},
+        answer: async () => {},
+      },
+      options: { session: sessionFile },
+      log: () => {},
+      signal: controller.signal,
+    },
+    { api, wait: async () => {}, home },
+  );
+
+  // Both cards are acknowledged to the hub, so neither retries, while WeChat receives ONLY ONE bubble
+  assert.deepEqual(deliveredIds, [16, 17]);
+  assert.equal(sentTexts.length, 1);
+  assert.match(sentTexts[0] ?? "", /\*\*今天下午主要改了买家回访和 App 下载页。\*\*/);
+  assert.match(sentTexts[0] ?? "", /买家回访改单选/);
 });
 
 test("channel rolls back pre-tracked open card when sendText fails", async () => {

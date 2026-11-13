@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAnswer, renderCard, splitText, waitingForChoice } from "../src/card-text.ts";
+import { isRedundantSummary, parseAnswer, recordSpoken, renderCard, splitText, waitingForChoice } from "../src/card-text.ts";
 
 test("an open ask lists options and marks the recommendation", () => {
   const text = renderCard({
@@ -57,6 +57,35 @@ test("a plain reply has no card number and no label", () => {
   };
   assert.equal(renderCard(notice), "我是这边的助手。");
   assert.equal(renderCard({ ...notice, id: 4, title: "回复", rule: undefined }), "");
+});
+
+test("a trailing tell:always summary card is recognized as redundant only when an earlier card of the same run already spoke", () => {
+  const stamp = "2026-11-12T08:21:15.975Z";
+  const spoken = recordSpoken(undefined, { id: 16, rule: "微信对话", createdAt: stamp });
+  // Card #17 is the hub's automatic `run:15:done` summary card created in the same finish() decision
+  assert.equal(
+    isRedundantSummary(
+      { id: 17, kind: "notice", state: "closed", title: "微信对话", rule: "微信对话", createdAt: stamp, ref: null },
+      spoken,
+    ),
+    true,
+  );
+  // A single-line reply in a later run (different createdAt) is NOT redundant
+  assert.equal(
+    isRedundantSummary(
+      { id: 18, kind: "notice", state: "closed", title: "微信对话", rule: "微信对话", createdAt: "2026-11-12T08:22:00.000Z", ref: null },
+      spoken,
+    ),
+    false,
+  );
+  // Another receipt notice in the same run with its own headline is NOT redundant
+  assert.equal(
+    isRedundantSummary(
+      { id: 17, kind: "notice", state: "closed", title: "第二段报告", rule: "微信对话", createdAt: stamp, ref: null },
+      spoken,
+    ),
+    false,
+  );
 });
 
 test("a report notice keeps its headline and drops the number", () => {

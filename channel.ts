@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createClient, type WechatClient } from "./src/api.ts";
-import { renderCard, splitText, waitingForChoice, type CardView } from "./src/card-text.ts";
+import { isRedundantSummary, recordSpoken, renderCard, splitText, waitingForChoice, type CardView } from "./src/card-text.ts";
 import { CHAT_RULE } from "./src/chat-session.ts";
 import { applyPage, trackDelivery } from "./src/page.ts";
 import { readSessionAsync, sessionPath, writeSessionAsync, type StoredSession } from "./src/session.ts";
@@ -11,7 +11,7 @@ import { finishLease, leaseExpired, startLease, TICKET_TTL_MS, TYPING_INTERVAL_M
 
 const WAITING = "等待后续文字指令";
 
-export type Card = CardView & { version: number; ref: string | null; rule?: string | null };
+export type Card = CardView & { version: number; ref: string | null; rule?: string | null; createdAt?: string | null };
 export type Context = {
   hub: {
     nextCard(wait: number): Promise<{ card: Card | null }>;
@@ -207,12 +207,13 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
       }
       const before = session.open ?? [];
       const added = card.state === "open" && !before.some((item) => item.id === card.id);
+      const redundant = isRedundantSummary(card, session.spoken);
       let sent = false;
       try {
         await updateSession((fresh) => {
           fresh.open = trackDelivery(fresh.open, card);
         });
-        const body = card.ref && card.state !== "open" ? followUp(card) : renderCard(card);
+        const body = redundant ? "" : card.ref && card.state !== "open" ? followUp(card) : renderCard(card);
         if (body) {
           try {
             const parts = splitText(body);
@@ -221,6 +222,10 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
               if (i < parts.length - 1 || parts.length === 1) await sleep(2_000, signal);
             }
             sent = true;
+            await updateSession((fresh) => {
+              const next = recordSpoken(fresh.spoken, card);
+              if (next?.length) fresh.spoken = next;
+            });
           } catch (error) {
             if (added) {
               await updateSession((fresh) => {
@@ -231,7 +236,7 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
           }
         }
         await hub.delivered(card.id, card.version, card.ref ?? `wechat-${card.id}`);
-        if (sent) typing.settle(card.rule);
+        if (sent || redundant) typing.settle(card.rule);
       } catch (error) {
         typing.settle(card.rule);
         const message = error instanceof Error ? error.message : String(error);

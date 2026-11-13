@@ -1,3 +1,5 @@
+import type { SpokenRun } from "./session.ts";
+
 export type OpenCard = { id: number; options: string[] };
 
 export type CardView = {
@@ -14,8 +16,42 @@ export type CardView = {
 };
 
 const LIMIT = 1800;
+const MAX_SPOKEN = 20;
 
 type Spoken = CardView & { rule?: string | null };
+
+/**
+ * With `tell: "always"`, the hub creates receipt cards (`notice` / `ask`) first and then an automatic
+ * `run:<id>:done` summary card (`title === rule`) in the same decision (`createdAt`).
+ * Once an earlier card of that run has already spoken in WeChat, suppress the trailing summary bubble.
+ */
+export function isRedundantSummary(
+  card: Pick<CardView, "id" | "kind" | "state" | "title"> & {
+    ref?: string | null;
+    rule?: string | null;
+    createdAt?: string | null;
+  },
+  spoken: readonly SpokenRun[] | undefined,
+): boolean {
+  if (card.ref) return false;
+  if (card.kind !== "notice" || card.state !== "closed") return false;
+  const rule = card.rule?.trim();
+  const createdAt = card.createdAt?.trim();
+  if (!rule || !createdAt) return false;
+  if (card.title.trim() !== rule) return false;
+  return (spoken ?? []).some((prior) => prior.rule === rule && prior.createdAt === createdAt && prior.id < card.id);
+}
+
+export function recordSpoken(
+  spoken: readonly SpokenRun[] | undefined,
+  card: { id: number; rule?: string | null; createdAt?: string | null },
+): SpokenRun[] | undefined {
+  const rule = card.rule?.trim();
+  const createdAt = card.createdAt?.trim();
+  if (!rule || !createdAt) return spoken ? [...spoken] : undefined;
+  const filtered = (spoken ?? []).filter((item) => item.id !== card.id);
+  return [...filtered, { id: card.id, rule, createdAt }].slice(-MAX_SPOKEN);
+}
 
 /** A choice states the question first. The card number appears only where a reply needs it. */
 export function renderCard(card: Spoken) {
