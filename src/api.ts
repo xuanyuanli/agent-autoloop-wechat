@@ -16,6 +16,55 @@ function statusCode(parsed: { ret?: number; errcode?: number }) {
   return 0;
 }
 
+export type CdnMedia = {
+  encrypt_query_param?: string;
+  aes_key?: string;
+  encrypt_type?: number;
+  full_url?: string;
+};
+
+export type RefMessage = {
+  title?: string;
+  svr_id?: string;
+  message_item?: WechatMessageItem;
+};
+
+export type WechatMessageItem = {
+  type?: number;
+  text_item?: { text?: string };
+  image_item?: {
+    media?: CdnMedia;
+    thumb_media?: CdnMedia;
+    aeskey?: string;
+    url?: string;
+    mid_size?: number;
+    thumb_size?: number;
+    hd_size?: number;
+  };
+  voice_item?: {
+    media?: CdnMedia;
+    encode_type?: number;
+    bits_per_sample?: number;
+    sample_rate?: number;
+    playtime?: number;
+    text?: string;
+  };
+  file_item?: {
+    media?: CdnMedia;
+    file_name?: string;
+    md5?: string;
+    len?: string;
+  };
+  video_item?: {
+    media?: CdnMedia;
+    video_size?: number;
+    play_length?: number;
+    video_md5?: string;
+    thumb_media?: CdnMedia;
+  };
+  ref_msg?: RefMessage;
+};
+
 export type WechatMessage = {
   message_type?: number;
   message_state?: number;
@@ -24,12 +73,7 @@ export type WechatMessage = {
   message_id?: number | string;
   client_id?: string;
   create_time_ms?: number;
-  item_list?: {
-    type?: number;
-    text_item?: { text?: string };
-    voice_item?: { text?: string };
-    file_item?: { file_name?: string };
-  }[];
+  item_list?: WechatMessageItem[];
 };
 
 export type Session = {

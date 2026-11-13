@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { createCipheriv, randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -372,4 +373,216 @@ test("channel holds media with wait prompt, then emits wechat.message event with
   assert.equal(emittedEvents[0]?.body.type, "wechat.message");
   assert.match(String(emittedEvents[0]?.body.detail), /图片/);
   assert.match(String(emittedEvents[0]?.body.detail), /帮我看这张截图/);
+});
+
+test("channel downloads and decrypts inbound media to disk and passes local paths to the emitted task", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "wx-media-chan-"));
+  const sessionFile = path.join(home, "wechat-session.json");
+  await writeSessionAsync(sessionFile, baseSession);
+
+  const key = randomBytes(16);
+  const pngPlain = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 42, 43, 44]);
+  const cipher = createCipheriv("aes-128-ecb", key, null);
+  const pngCipher = Buffer.concat([cipher.update(pngPlain), cipher.final()]);
+
+  const fileKey = randomBytes(16);
+  const logPlain = Buffer.from("ERROR 500 timeout\n");
+  const fileCipherBuilder = createCipheriv("aes-128-ecb", fileKey, null);
+  const logCipher = Buffer.concat([fileCipherBuilder.update(logPlain), fileCipherBuilder.final()]);
+
+  const controller = new AbortController();
+  const sentTexts: string[] = [];
+  const emittedEvents: Array<{ body: Record<string, unknown> }> = [];
+  let pageCount = 0;
+
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.startsWith("https://cdn.test/download")) {
+      if (url.includes("pic-1")) return new Response(new Uint8Array(pngCipher), { status: 200 });
+      if (url.includes("log-1")) return new Response(new Uint8Array(logCipher), { status: 200 });
+      return new Response("missing", { status: 404 });
+    }
+    emittedEvents.push({ body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+    return new Response("{}", { status: 202 });
+  };
+
+  const api: WechatClient = {
+    fetchQr: async () => ({ qrcode: "q", image: "img" }),
+    pollQr: async () => ({ status: "wait" }),
+    getUpdates: async () => {
+      pageCount += 1;
+      if (pageCount === 1) {
+        return {
+          messages: [
+            {
+              message_id: "img-1",
+              message_type: 1,
+              from_user_id: "owner-wx",
+              item_list: [
+                { type: 2, image_item: { aeskey: key.toString("hex"), media: { encrypt_query_param: "pic-1" } } },
+              ],
+            },
+          ],
+          cursor: "cur-1",
+        };
+      }
+      if (pageCount === 2) {
+        return {
+          messages: [
+            {
+              message_id: "msg-2",
+              message_type: 1,
+              from_user_id: "owner-wx",
+              item_list: [
+                {
+                  type: 4,
+                  file_item: {
+                    file_name: "server.log",
+                    media: { encrypt_query_param: "log-1", aes_key: fileKey.toString("base64") },
+                  },
+                },
+                { type: 1, text_item: { text: "结合图和日志排查" } },
+              ],
+            },
+          ],
+          cursor: "cur-2",
+        };
+      }
+      controller.abort();
+      return { messages: [], cursor: undefined };
+    },
+    sendText: async (_s, _to, text) => {
+      sentTexts.push(text);
+    },
+    typingTicket: async () => "tk",
+    sendTyping: async () => {},
+  };
+
+  await wechat(
+    {
+      hub: {
+        nextCard: async () => {
+          await new Promise((r) => controller.signal.addEventListener("abort", r, { once: true }));
+          return { card: null };
+        },
+        delivered: async () => {},
+        failed: async () => {},
+        answer: async () => {},
+      },
+      options: { session: sessionFile, sourceKey: "src-secret", cdnBaseUrl: "https://cdn.test" },
+      log: () => {},
+      signal: controller.signal,
+    },
+    { api, fetchImpl, wait: async () => {}, home },
+  );
+
+  assert.deepEqual(sentTexts, ["等待后续文字指令"]);
+  assert.equal(emittedEvents.length, 1);
+  const detail = String(emittedEvents[0]?.body.detail ?? "");
+  assert.match(detail, /已保存到本机，可直接读取文件/);
+  assert.match(detail, /结合图和日志排查/);
+
+  const paths = [...detail.matchAll(/-> ([^\n（]+)/g)].map((m) => m[1].trim());
+  assert.equal(paths.length, 2);
+  assert.ok(paths[0].endsWith(".png"));
+  assert.ok(paths[1].endsWith("-server.log"));
+  assert.deepEqual(readFileSync(paths[0]), pngPlain);
+  assert.deepEqual(readFileSync(paths[1]), logPlain);
+});
+
+test("channel settles typing even when a delivered notice renders empty (title === 回复)", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "wx-empty-settle-"));
+  const sessionFile = path.join(home, "wechat-session.json");
+  await writeSessionAsync(sessionFile, baseSession);
+
+  const controller = new AbortController();
+  const typingStates: Array<1 | 2> = [];
+  const deliveredIds: number[] = [];
+  let cardStep = 0;
+
+  const api: WechatClient = {
+    fetchQr: async () => ({ qrcode: "q", image: "img" }),
+    pollQr: async () => ({ status: "wait" }),
+    getUpdates: async () => {
+      await new Promise((r) => controller.signal.addEventListener("abort", r, { once: true }));
+      return { messages: [], cursor: undefined };
+    },
+    sendText: async () => {},
+    typingTicket: async () => "tk",
+    sendTyping: async (_s, _t, status) => {
+      typingStates.push(status);
+    },
+  };
+
+  // Trigger typing via open ask -> user reply -> notice with title "回复" (suppressed by renderCard)
+  let pollStep = 0;
+  api.getUpdates = async () => {
+    pollStep += 1;
+    if (pollStep === 1) {
+      while (deliveredIds.length < 1 && !controller.signal.aborted) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return {
+        messages: [
+          {
+            message_id: "ans-1",
+            message_type: 1,
+            from_user_id: "owner-wx",
+            item_list: [{ type: 1, text_item: { text: "1" } }],
+          },
+        ],
+        cursor: "cur-1",
+      };
+    }
+    await new Promise((r) => controller.signal.addEventListener("abort", r, { once: true }));
+    return { messages: [], cursor: undefined };
+  };
+
+  await wechat(
+    {
+      hub: {
+        nextCard: async () => {
+          cardStep += 1;
+          if (cardStep === 1) return { card: makeOpenAsk(31, "巡检规则") };
+          if (cardStep === 2) {
+            while (typingStates.length < 1 && !controller.signal.aborted) {
+              await new Promise((r) => setTimeout(r, 5));
+            }
+            return {
+              card: {
+                id: 32,
+                version: 1,
+                ref: null,
+                kind: "notice",
+                state: "closed",
+                title: "回复",
+                text: "不应卡住输入状态",
+                options: [],
+                recommend: null,
+                choice: null,
+                answer: null,
+                result: null,
+                rule: "巡检规则",
+              },
+            };
+          }
+          controller.abort();
+          return { card: null };
+        },
+        delivered: async (id) => {
+          deliveredIds.push(id);
+        },
+        failed: async () => {},
+        answer: async () => {},
+      },
+      options: { session: sessionFile },
+      log: () => {},
+      signal: controller.signal,
+    },
+    { api, wait: async () => {}, home },
+  );
+
+  assert.deepEqual(deliveredIds, [31, 32]);
+  assert.equal(typingStates[0], 1);
+  assert.equal(typingStates.includes(2), true);
 });

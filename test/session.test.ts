@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { readSession, readSessionAsync, sessionFromLogin, writeSession, writeSessionAsync, type StoredSession } from "../src/session.ts";
+import {
+  readSession,
+  readSessionAsync,
+  resolveSessionFile,
+  sessionFromLogin,
+  writeSession,
+  writeSessionAsync,
+  type StoredSession,
+} from "../src/session.ts";
 
 const existing: StoredSession = {
   token: "old",
@@ -41,4 +49,21 @@ test("async and sync session persistence round-trip atomically", async () => {
 
   writeSession(file, { ...existing, cursor: "cur-10" });
   assert.equal(readSession(file)?.cursor, "cur-10");
+});
+
+test("resolveSessionFile honors --session arg, then config.json channels.wechat.session, then default", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "wx-cfg-"));
+  assert.equal(resolveSessionFile({ home }), path.join(home, "wechat-session.json"));
+
+  writeFileSync(
+    path.join(home, "config.json"),
+    JSON.stringify({
+      channels: {
+        wechat: { use: "agent-autoloop-wechat", session: "custom/my-wx.json" },
+      },
+    }),
+  );
+  assert.equal(resolveSessionFile({ home }), path.join(home, "custom", "my-wx.json"));
+  assert.equal(resolveSessionFile({ home, args: ["--session", "cli.json"], cwd: home }), path.join(home, "cli.json"));
+  assert.equal(resolveSessionFile({ home, args: ["--session=flag.json"], cwd: home }), path.join(home, "flag.json"));
 });

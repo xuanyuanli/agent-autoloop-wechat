@@ -5,6 +5,7 @@ import path from "node:path";
 import { createClient, type WechatClient } from "./src/api.ts";
 import { isRedundantSummary, recordSpoken, renderCard, splitText, waitingForChoice, type CardView } from "./src/card-text.ts";
 import { CHAT_RULE } from "./src/chat-session.ts";
+import { downloadPageMedia, pruneOldMedia } from "./src/media.ts";
 import { applyPage, trackDelivery } from "./src/page.ts";
 import { readSessionAsync, sessionPath, writeSessionAsync, type StoredSession } from "./src/session.ts";
 import { finishLease, leaseExpired, startLease, TICKET_TTL_MS, TYPING_INTERVAL_MS, type TypingLease } from "./src/typing.ts";
@@ -50,9 +51,16 @@ const defaultSleep = (ms: number, signal: AbortSignal) =>
 
 export default async function wechat({ hub, options, log, signal }: Context, deps: WechatDeps = {}) {
   const file = typeof options.session === "string" ? options.session : sessionPath(deps.home);
+  const mediaDir =
+    typeof options.mediaDir === "string" && options.mediaDir
+      ? options.mediaDir
+      : path.join(path.dirname(file), "wechat-media");
+  const cdnBaseUrl = typeof options.cdnBaseUrl === "string" && options.cdnBaseUrl ? options.cdnBaseUrl : undefined;
   const api = deps.api ?? createClient(deps.fetchImpl);
   const sleep = deps.wait ?? defaultSleep;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+
+  void pruneOldMedia(mediaDir).catch(() => {});
 
   let writing: Promise<void> = Promise.resolve();
   function updateSession(change: (session: StoredSession) => void) {
@@ -208,7 +216,6 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
       const before = session.open ?? [];
       const added = card.state === "open" && !before.some((item) => item.id === card.id);
       const redundant = isRedundantSummary(card, session.spoken);
-      let sent = false;
       try {
         await updateSession((fresh) => {
           fresh.open = trackDelivery(fresh.open, card);
@@ -221,7 +228,6 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
               await api.sendText(session, session.userId, parts[i], session.contextToken);
               if (i < parts.length - 1 || parts.length === 1) await sleep(2_000, signal);
             }
-            sent = true;
             await updateSession((fresh) => {
               const next = recordSpoken(fresh.spoken, card);
               if (next?.length) fresh.spoken = next;
@@ -236,7 +242,7 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
           }
         }
         await hub.delivered(card.id, card.version, card.ref ?? `wechat-${card.id}`);
-        if (sent || redundant) typing.settle(card.rule);
+        typing.settle(card.rule);
       } catch (error) {
         typing.settle(card.rule);
         const message = error instanceof Error ? error.message : String(error);
@@ -255,6 +261,13 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
       }
       try {
         const page = await api.getUpdates(session, signal);
+        const resolved = await downloadPageMedia(page.messages, session.userId, {
+          dir: mediaDir,
+          ...(cdnBaseUrl ? { cdnBaseUrl } : {}),
+          fetchImpl,
+          signal,
+          log,
+        });
         const plan = await applyPage(async () => (await load()) ?? session, page.messages, {
           answer: async (item, contextToken) => {
             await hub.answer(item.card, {
@@ -283,7 +296,7 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
               throw error;
             }
           },
-        });
+        }, resolved);
         await updateSession((fresh) => {
           const stillOpen = new Map((fresh.open ?? []).map((item) => [item.id, item]));
           for (const id of plan.closed) stillOpen.delete(id);

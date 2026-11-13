@@ -159,3 +159,18 @@ test("delivery records the card before the bubble exists, and a closed card leav
   assert.deepEqual(open, [{ id: 7, options: ["保持", "改"], ref: "wechat-7" }]);
   assert.deepEqual(trackDelivery(open, { id: 7, state: "done", options: [], ref: "wechat-7" }), []);
 });
+
+test("planMessages propagates resolved media paths through pending to the next task", () => {
+  const picItem = { type: 2 };
+  const resolved = new Map([[picItem, { path: "/tmp/shot.png", size: 4096 }]]);
+  const picMsg: WechatMessage = { message_id: "p1", from_user_id: user, message_type: 1, item_list: [picItem] };
+
+  const first = planMessages({ ...session, open: [] }, [picMsg], resolved);
+  assert.equal(first.waiting, true);
+  assert.deepEqual(first.pending, [{ kind: "图片", path: "/tmp/shot.png", size: 4096 }]);
+
+  const second = planMessages({ ...session, open: [], pending: first.pending }, [text("m2", "这是哪个页面")]);
+  assert.equal(second.pending.length, 0);
+  assert.match(second.tasks[0]?.detail ?? "", /\/tmp\/shot\.png（4\.0 KB）/);
+  assert.match(second.tasks[0]?.detail ?? "", /这是哪个页面/);
+});

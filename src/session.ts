@@ -1,15 +1,70 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Session } from "./api.ts";
 
-export function sessionPath(
-  home = process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".agent-autoloop"),
-) {
+export function defaultHome() {
+  return process.env.AGENT_AUTOLOOP_HOME || path.join(process.env.USERPROFILE || process.env.HOME || homedir(), ".agent-autoloop");
+}
+
+export function sessionPath(home = defaultHome()) {
   return path.join(home, "wechat-session.json");
 }
 
-export type Held = { kind: string; name?: string; note?: string };
+function expandHome(raw: string) {
+  if (raw === "~") return homedir();
+  if (raw.startsWith("~/") || raw.startsWith("~\\")) return path.join(homedir(), raw.slice(2));
+  return raw;
+}
+
+/**
+ * Resolve session file for CLI tools (`bin/login.ts`):
+ * 1. `--session <path>` / `--session=<path>`
+ * 2. `channels.wechat.session` (or any channel with `use` matching `agent-autoloop-wechat`) in `config.json`
+ * 3. Default `sessionPath(home)`
+ */
+export function resolveSessionFile(opts: { args?: readonly string[]; home?: string; cwd?: string } = {}) {
+  const args = opts.args ?? [];
+  const cwd = opts.cwd ?? process.cwd();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--session" && args[i + 1]) {
+      return path.resolve(cwd, expandHome(args[i + 1]));
+    }
+    if (arg.startsWith("--session=") && arg.length > "--session=".length) {
+      return path.resolve(cwd, expandHome(arg.slice("--session=".length)));
+    }
+  }
+  const home = opts.home ?? defaultHome();
+  try {
+    const raw = readFileSync(path.join(home, "config.json"), "utf8");
+    const parsed = JSON.parse(raw) as {
+      channels?: Record<string, { use?: unknown; session?: unknown }>;
+    };
+    const channels = parsed.channels;
+    if (channels && typeof channels === "object") {
+      const candidates = [
+        channels.wechat,
+        ...Object.values(channels).filter(
+          (entry) =>
+            typeof entry?.use === "string" &&
+            (entry.use === "agent-autoloop-wechat" || entry.use.endsWith("/agent-autoloop-wechat") || entry.use.endsWith("\\agent-autoloop-wechat")),
+        ),
+      ];
+      for (const entry of candidates) {
+        if (typeof entry?.session === "string" && entry.session.trim()) {
+          return path.resolve(home, expandHome(entry.session.trim()));
+        }
+      }
+    }
+  } catch {
+    // Missing or unreadable config.json falls back to default sessionPath.
+  }
+  return sessionPath(home);
+}
+
+export type Held = { kind: string; name?: string; note?: string; path?: string; size?: number; error?: string };
 export type SpokenRun = { id: number; rule: string; createdAt: string };
 export type StoredSession = Session & {
   open?: { id: number; options: string[]; ref?: string; rule?: string }[];

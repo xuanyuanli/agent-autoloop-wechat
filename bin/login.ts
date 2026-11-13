@@ -2,9 +2,9 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { createClient } from "../src/api.ts";
-import { readSession, sessionFromLogin, sessionPath, writeSession } from "../src/session.ts";
+import { readSession, resolveSessionFile, sessionFromLogin, writeSession } from "../src/session.ts";
 
-const file = sessionPath();
+const file = resolveSessionFile({ args: process.argv.slice(2) });
 const api = createClient();
 const LOGIN_BASE = "https://ilinkai.weixin.qq.com";
 let base = LOGIN_BASE;
