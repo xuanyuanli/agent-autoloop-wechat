@@ -72,3 +72,13 @@ test("a paused context token is sent once more without it", async () => {
   assert.equal(calls.length, 2);
   assert.equal(JSON.parse(calls[1].body).msg.context_token, undefined);
 });
+
+test("prepare failed fails fast without rate-limit retries", async () => {
+  let attempts = 0;
+  const { api } = client(() => {
+    attempts += 1;
+    return JSON.stringify({ ret: -2, errmsg: "prepare failed" });
+  });
+  await assert.rejects(() => api.sendText(session, "user-1", "你好", "ctx"), /sendmessage -2 prepare failed/);
+  assert.equal(attempts, 1);
+});

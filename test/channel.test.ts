@@ -586,3 +586,104 @@ test("channel settles typing even when a delivered notice renders empty (title =
   assert.equal(typingStates[0], 1);
   assert.equal(typingStates.includes(2), true);
 });
+
+test("channel sends a single keepalive nudge after 10h idle and intercepts keepalive reply without emitting a task", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "wx-keepalive-"));
+  const sessionFile = path.join(home, "wechat-session.json");
+  const start = Date.parse("2026-11-16T09:00:00+08:00");
+  await writeSessionAsync(sessionFile, {
+    ...baseSession,
+    contextToken: "ctx-old",
+    lastInboundAt: start,
+  });
+
+  const controller = new AbortController();
+  const sentTexts: string[] = [];
+  let emittedCount = 0;
+  let currentNow = Date.parse("2026-11-16T19:01:00+08:00");
+  let keepaliveTick = 0;
+  let pollStep = 0;
+
+  const fetchImpl: typeof fetch = async () => {
+    emittedCount += 1;
+    return new Response("{}", { status: 202 });
+  };
+
+  const api: WechatClient = {
+    fetchQr: async () => ({ qrcode: "q", image: "img" }),
+    pollQr: async () => ({ status: "wait" }),
+    getUpdates: async () => {
+      pollStep += 1;
+      if (pollStep === 1) {
+        while (sentTexts.length < 1 && !controller.signal.aborted) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        currentNow = Date.parse("2026-11-16T19:02:00+08:00");
+        return {
+          messages: [
+            {
+              message_id: "ka-1",
+              message_type: 1,
+              from_user_id: "owner-wx",
+              context_token: "ctx-fresh",
+              item_list: [{ type: 1, text_item: { text: "ok" } }],
+            },
+          ],
+          cursor: "cur-ka",
+        };
+      }
+      while (sentTexts.length < 2 && !controller.signal.aborted) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      controller.abort();
+      return { messages: [], cursor: undefined };
+    },
+    sendText: async (_s, _to, text) => {
+      sentTexts.push(text);
+    },
+    typingTicket: async () => "tk",
+    sendTyping: async () => {},
+  };
+
+  await wechat(
+    {
+      hub: {
+        nextCard: async () => {
+          await new Promise((r) => controller.signal.addEventListener("abort", r, { once: true }));
+          return { card: null };
+        },
+        delivered: async () => {},
+        failed: async () => {},
+        answer: async () => {},
+      },
+      options: { session: sessionFile, sourceKey: "src-secret", keepaliveTimeZone: "Asia/Shanghai" },
+      log: () => {},
+      signal: controller.signal,
+    },
+    {
+      api,
+      fetchImpl,
+      wait: async () => {},
+      keepaliveWait: async (_ms, sig) => {
+        keepaliveTick += 1;
+        if (keepaliveTick > 3) {
+          await new Promise((r) => sig.addEventListener("abort", r, { once: true }));
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      },
+      now: () => currentNow,
+      home,
+    },
+  );
+
+  assert.equal(emittedCount, 0);
+  assert.equal(sentTexts.length, 2);
+  assert.match(sentTexts[0] ?? "", /保活/);
+  assert.match(sentTexts[1] ?? "", /已续期/);
+
+  const saved = await readSessionAsync(sessionFile);
+  assert.equal(saved?.contextToken, "ctx-fresh");
+  assert.equal(saved?.lastInboundAt, Date.parse("2026-11-16T19:02:00+08:00"));
+  assert.equal(saved?.keepaliveNudgedAt, undefined);
+});

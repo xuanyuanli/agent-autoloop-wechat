@@ -7,6 +7,12 @@ import { isRedundantSummary, recordSpoken, renderCard, splitText, waitingForChoi
 import { CHAT_RULE } from "./src/chat-session.ts";
 import { downloadPageMedia, pruneOldMedia } from "./src/media.ts";
 import { applyPage, trackDelivery } from "./src/page.ts";
+import {
+  KEEPALIVE_ACK_TEXT,
+  KEEPALIVE_NUDGE_TEXT,
+  shouldSendKeepalive,
+  type KeepaliveConfig,
+} from "./src/keepalive.ts";
 import { readSessionAsync, sessionPath, writeSessionAsync, type StoredSession } from "./src/session.ts";
 import { finishLease, leaseExpired, startLease, TICKET_TTL_MS, TYPING_INTERVAL_MS, type TypingLease } from "./src/typing.ts";
 
@@ -29,6 +35,9 @@ export type WechatDeps = {
   api?: WechatClient;
   fetchImpl?: typeof fetch;
   wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  keepaliveWait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  keepaliveIntervalMs?: number;
+  now?: () => number;
   home?: string;
 };
 
@@ -42,12 +51,27 @@ const defaultSleep = (ms: number, signal: AbortSignal) =>
       signal.removeEventListener("abort", stop);
       resolve();
     }, ms);
+    timer.unref?.();
     const stop = () => {
       clearTimeout(timer);
       resolve();
     };
     signal.addEventListener("abort", stop, { once: true });
   });
+
+function readKeepaliveConfig(options: Record<string, unknown>): KeepaliveConfig {
+  return {
+    ...(typeof options.keepaliveHours === "number"
+      ? { hours: options.keepaliveHours }
+      : options.keepaliveHours === false
+        ? { hours: 0 }
+        : {}),
+    ...(typeof options.keepaliveQuietStart === "string" ? { quietStart: options.keepaliveQuietStart } : {}),
+    ...(typeof options.keepaliveQuietEnd === "string" ? { quietEnd: options.keepaliveQuietEnd } : {}),
+    ...(typeof options.keepaliveAdvanceTime === "string" ? { advanceTime: options.keepaliveAdvanceTime } : {}),
+    ...(typeof options.keepaliveTimeZone === "string" ? { timeZone: options.keepaliveTimeZone } : {}),
+  };
+}
 
 export default async function wechat({ hub, options, log, signal }: Context, deps: WechatDeps = {}) {
   const file = typeof options.session === "string" ? options.session : sessionPath(deps.home);
@@ -59,6 +83,8 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
   const api = deps.api ?? createClient(deps.fetchImpl);
   const sleep = deps.wait ?? defaultSleep;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const now = deps.now ?? Date.now;
+  const keepaliveConfig = readKeepaliveConfig(options);
 
   void pruneOldMedia(mediaDir).catch(() => {});
 
@@ -78,7 +104,7 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
   const onAbort = () => void typing.hide();
   signal.addEventListener("abort", onAbort, { once: true });
   try {
-    await Promise.all([deliver(), receive()]);
+    await Promise.all([deliver(), receive(), keepalive()]);
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
@@ -286,6 +312,14 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
               await done?.();
             }
           },
+          sendKeepaliveAck: async (contextToken) => {
+            const done = await typing.flash(contextToken);
+            try {
+              await api.sendText(session, session.userId, KEEPALIVE_ACK_TEXT, contextToken);
+            } finally {
+              await done?.();
+            }
+          },
           emit: async (task, contextToken) => {
             const first = !typing.expects(CHAT_RULE);
             typing.remember(CHAT_RULE, contextToken);
@@ -304,6 +338,10 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
           if (plan.pending.length) fresh.pending = plan.pending;
           else delete fresh.pending;
           if (plan.contextToken) fresh.contextToken = plan.contextToken;
+          if (plan.inbound) {
+            fresh.lastInboundAt = now();
+            delete fresh.keepaliveNudgedAt;
+          }
           if (page.cursor) fresh.cursor = page.cursor;
         });
       } catch (error) {
@@ -312,6 +350,39 @@ export default async function wechat({ hub, options, log, signal }: Context, dep
         const pause = message.includes("-14") ? 60_000 : 5_000;
         log(message.includes("-14") ? "微信登录可能失效，请重新运行 node bin/login.ts" : `收消息中断：${message}`);
         await sleep(pause, signal);
+      }
+    }
+  }
+
+  async function keepalive() {
+    if (keepaliveConfig.hours === 0) return;
+    const intervalMs = deps.keepaliveIntervalMs ?? 60_000;
+    const pause = deps.keepaliveWait ?? defaultSleep;
+    while (!signal.aborted) {
+      await pause(intervalMs, signal);
+      if (signal.aborted) return;
+      const session = await load();
+      if (!session) continue;
+      const currentNow = now();
+      if (!shouldSendKeepalive(session, currentNow, keepaliveConfig)) continue;
+      await updateSession((fresh) => {
+        if (!fresh.lastInboundAt || currentNow >= fresh.lastInboundAt) {
+          fresh.keepaliveNudgedAt = currentNow;
+        }
+      });
+      try {
+        await api.sendText(session, session.userId, KEEPALIVE_NUDGE_TEXT, session.contextToken);
+        log("已发送微信保活提醒");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`发送微信保活提醒失败：${message}`);
+        if (!message.includes("-2") && !message.includes("-14")) {
+          await updateSession((fresh) => {
+            if (fresh.keepaliveNudgedAt === currentNow) {
+              delete fresh.keepaliveNudgedAt;
+            }
+          }).catch(() => {});
+        }
       }
     }
   }

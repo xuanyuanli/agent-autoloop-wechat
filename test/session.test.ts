@@ -20,6 +20,8 @@ const existing: StoredSession = {
   userId: "user-1",
   cursor: "cur-9",
   contextToken: "ctx",
+  lastInboundAt: 1_700_000_000_000,
+  keepaliveNudgedAt: 1_700_036_000_000,
   open: [{ id: 4, options: ["保持", "改"], ref: "wechat-4" }],
   pending: [{ kind: "图片" }],
 };
@@ -31,6 +33,8 @@ test("logging in again as the same account keeps unanswered cards", () => {
   assert.equal(next.open?.[0]?.id, 4);
   assert.equal(next.pending?.[0]?.kind, "图片");
   assert.equal(next.contextToken, "ctx");
+  assert.equal(next.lastInboundAt, 1_700_000_000_000);
+  assert.equal(next.keepaliveNudgedAt, 1_700_036_000_000);
 });
 
 test("logging in as a different account drops the previous cards", () => {
@@ -38,6 +42,8 @@ test("logging in as a different account drops the previous cards", () => {
   assert.equal(next.cursor, "");
   assert.equal(next.open, undefined);
   assert.equal(next.pending, undefined);
+  assert.equal(next.lastInboundAt, undefined);
+  assert.equal(next.keepaliveNudgedAt, undefined);
 });
 
 test("async and sync session persistence round-trip atomically", async () => {

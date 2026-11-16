@@ -214,7 +214,7 @@ export function createClient(
           stripped = true;
           continue;
         }
-        if (code === -2 && attempt < 3) {
+        if (code === -2 && !parsed.errmsg?.toLowerCase().includes("prepare failed") && attempt < 3) {
           await wait(2000 * 2 ** attempt);
           continue;
         }

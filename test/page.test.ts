@@ -174,3 +174,28 @@ test("planMessages propagates resolved media paths through pending to the next t
   assert.match(second.tasks[0]?.detail ?? "", /\/tmp\/shot\.png（4\.0 KB）/);
   assert.match(second.tasks[0]?.detail ?? "", /这是哪个页面/);
 });
+
+test("keepalive replies are intercepted without emitting a task, while pending media still consumes short text", () => {
+  const direct = planMessages({ ...session, open: [] }, [text("k1", "保活")]);
+  assert.equal(direct.keepaliveAck, true);
+  assert.equal(direct.inbound, true);
+  assert.equal(direct.tasks.length, 0);
+
+  const normalOk = planMessages({ ...session, open: [], lastInboundAt: 1000 }, [text("k2", "ok")]);
+  assert.equal(normalOk.keepaliveAck, false);
+  assert.equal(normalOk.tasks[0]?.text, "ok");
+
+  const nudgedOk = planMessages(
+    { ...session, open: [], lastInboundAt: 1000, keepaliveNudgedAt: 2000 },
+    [text("k3", "ok")],
+  );
+  assert.equal(nudgedOk.keepaliveAck, true);
+  assert.equal(nudgedOk.tasks.length, 0);
+
+  const mediaWithOk = planMessages(
+    { ...session, open: [], pending: [{ kind: "图片", path: "/tmp/a.png" }], lastInboundAt: 1000, keepaliveNudgedAt: 2000 },
+    [text("k4", "ok")],
+  );
+  assert.equal(mediaWithOk.keepaliveAck, false);
+  assert.equal(mediaWithOk.tasks.length, 1);
+});

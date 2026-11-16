@@ -1,7 +1,9 @@
 // What one page of WeChat updates means: card answers, a held attachment, or a task.
 import type { WechatMessage, WechatMessageItem } from "./api.ts";
 import { parseAnswer } from "./card-text.ts";
-import { composeTask, inboundMessage } from "./inbound.ts";
+import { inboundMessage } from "./inbound.ts";
+import { composeTask } from "./inbound.ts";
+import { isKeepaliveReply } from "./keepalive.ts";
 import type { MediaResult } from "./media.ts";
 import type { Held, StoredSession } from "./session.ts";
 
@@ -10,13 +12,18 @@ export type OpenRef = { id: number; options: string[]; ref?: string; rule?: stri
 export type PagePlan = {
   answers: { card: number; choice: number; by: string; ref: string; text?: string; rule?: string }[];
   waiting: boolean;
+  keepaliveAck: boolean;
+  inbound: boolean;
   tasks: { id: string; text: string; detail: string }[];
   pending: Held[];
   closed: number[];
   contextToken?: string;
 };
 
-type PageSession = Pick<StoredSession, "userId" | "open" | "pending" | "contextToken">;
+type PageSession = Pick<
+  StoredSession,
+  "userId" | "open" | "pending" | "contextToken" | "lastInboundAt" | "keepaliveNudgedAt"
+>;
 
 /** Record a card before it is sent, so a reply in the same poll still matches it. */
 export function trackDelivery(
@@ -44,9 +51,15 @@ export function planMessages(
   const closed: number[] = [];
   let contextToken = session.contextToken;
   let waiting = false;
+  let keepaliveAck = false;
+  let inboundSeen = false;
+  let nudgedActive = Boolean(
+    session.keepaliveNudgedAt && (!session.lastInboundAt || session.keepaliveNudgedAt >= session.lastInboundAt),
+  );
   for (const raw of messages) {
     const inbound = inboundMessage(raw, resolved);
     if (!inbound || inbound.from !== session.userId) continue;
+    inboundSeen = true;
     if (inbound.contextToken) contextToken = inbound.contextToken;
     if (inbound.text) {
       const answer = parseAnswer(inbound.text, [...open.values()]);
@@ -63,6 +76,8 @@ export function planMessages(
         });
         open.delete(answer.card);
         closed.push(answer.card);
+        keepaliveAck = false;
+        nudgedActive = false;
         if (inbound.media.length) {
           held.push(...inbound.media);
           waiting = true;
@@ -71,20 +86,40 @@ export function planMessages(
         }
         continue;
       }
+      if (!held.length && !inbound.media.length && isKeepaliveReply(inbound.text, nudgedActive)) {
+        waiting = false;
+        keepaliveAck = true;
+        nudgedActive = false;
+        continue;
+      }
       waiting = false;
+      keepaliveAck = false;
+      nudgedActive = false;
       held.push(...inbound.media);
       tasks.push({ id: inbound.id, text: inbound.text, detail: composeTask(held.splice(0), inbound.text) });
       continue;
     }
     held.push(...inbound.media);
     waiting = true;
+    keepaliveAck = false;
+    nudgedActive = false;
   }
-  return { answers, waiting, tasks, pending: held, closed, ...(contextToken ? { contextToken } : {}) };
+  return {
+    answers,
+    waiting,
+    keepaliveAck: keepaliveAck && !tasks.length && !answers.length && !waiting,
+    inbound: inboundSeen,
+    tasks,
+    pending: held,
+    closed,
+    ...(contextToken ? { contextToken } : {}),
+  };
 }
 
 export type PageIo = {
   answer: (item: PagePlan["answers"][number], contextToken?: string) => Promise<void>;
   sendWait: (contextToken?: string) => Promise<void>;
+  sendKeepaliveAck?: (contextToken?: string) => Promise<void>;
   emit: (task: PagePlan["tasks"][number], contextToken?: string) => Promise<void>;
 };
 
@@ -101,6 +136,7 @@ export async function applyPage(
   const plan = planMessages(await load(), messages, resolved);
   for (const item of plan.answers) await io.answer(item, plan.contextToken);
   if (plan.waiting) await io.sendWait(plan.contextToken);
+  if (plan.keepaliveAck) await io.sendKeepaliveAck?.(plan.contextToken);
   for (const task of plan.tasks) await io.emit(task, plan.contextToken);
   return plan;
 }

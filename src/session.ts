@@ -69,6 +69,8 @@ export type SpokenRun = { id: number; rule: string; createdAt: string };
 export type StoredSession = Session & {
   open?: { id: number; options: string[]; ref?: string; rule?: string }[];
   contextToken?: string;
+  lastInboundAt?: number;
+  keepaliveNudgedAt?: number;
   pending?: Held[];
   spoken?: SpokenRun[];
 };
@@ -86,11 +88,17 @@ function parseSpoken(raw: unknown): SpokenRun[] | undefined {
   return items.length ? items : undefined;
 }
 
+function parseTimestamp(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+}
+
 function parseSession(raw: string): StoredSession | null {
   try {
     const parsed = JSON.parse(raw) as Partial<StoredSession>;
     if (!parsed.token || !parsed.baseUrl || !parsed.userId || !parsed.botId) return null;
     const spoken = parseSpoken(parsed.spoken);
+    const lastInboundAt = parseTimestamp(parsed.lastInboundAt);
+    const keepaliveNudgedAt = parseTimestamp(parsed.keepaliveNudgedAt);
     return {
       token: parsed.token,
       baseUrl: parsed.baseUrl,
@@ -99,6 +107,8 @@ function parseSession(raw: string): StoredSession | null {
       cursor: parsed.cursor ?? "",
       ...(Array.isArray(parsed.open) ? { open: parsed.open } : {}),
       ...(parsed.contextToken ? { contextToken: parsed.contextToken } : {}),
+      ...(lastInboundAt !== undefined ? { lastInboundAt } : {}),
+      ...(keepaliveNudgedAt !== undefined ? { keepaliveNudgedAt } : {}),
       ...(Array.isArray(parsed.pending) ? { pending: parsed.pending } : {}),
       ...(spoken ? { spoken } : {}),
     };
@@ -136,6 +146,8 @@ export function sessionFromLogin(
     userId: next.userId,
     cursor: existing && same ? existing.cursor : "",
     ...(existing && same && existing.contextToken ? { contextToken: existing.contextToken } : {}),
+    ...(existing && same && existing.lastInboundAt ? { lastInboundAt: existing.lastInboundAt } : {}),
+    ...(existing && same && existing.keepaliveNudgedAt ? { keepaliveNudgedAt: existing.keepaliveNudgedAt } : {}),
     ...(existing && same && existing.open?.length ? { open: existing.open } : {}),
     ...(existing && same && existing.pending?.length ? { pending: existing.pending } : {}),
     ...(existing && same && existing.spoken?.length ? { spoken: existing.spoken } : {}),
