@@ -67,9 +67,7 @@ agent-autoloop key new source local
 - `cdnBaseUrl`：自定义微信媒体 CDN 地址（默认 `https://novac2c.cdn.weixin.qq.com/c2c`）。
 - `sourceKey`：单独指定投递事件用的来源密钥（默认读取 `config.json` 顶层的 `source.key`）。
 - `hubUrl`：中台地址（默认读取环境变量 `AGENT_AUTOLOOP_PUBLIC_URL` 或 `http://127.0.0.1:3350`）。
-- `keepaliveHours`：闲置多久触发一次微信保活提醒（默认 `10` 小时，设 `0` 或 `false` 关闭）。
-- `keepaliveQuietStart` / `keepaliveQuietEnd` / `keepaliveAdvanceTime`：夜间免打扰区间与睡前提前提醒时间（默认 `22:00`–`07:30`，若到期时间落在免打扰内且距上次发言满 2 小时，则在 `21:00` 提前提醒）。
-- `keepaliveTimeZone`：计算免打扰时间段使用的 IANA 时区（默认本机时区）。
+- `keepalive`：微信保活，默认开启。`true` 使用下面的默认策略；`false` 关闭；写成对象可覆盖 `hours`（默认 `20`）、`quietStart`、`quietEnd`、`advanceTime`、`timeZone`。也认原来的 `keepaliveHours`（`0` 或 `false` 同样关闭）、`keepaliveQuietStart`、`keepaliveQuietEnd`、`keepaliveAdvanceTime`、`keepaliveTimeZone`。
 
 ### 2. 配置 `rules.json`
 
@@ -137,7 +135,7 @@ agent-autoloop doctor
 
 别人发给这个 bot 的消息会被丢掉（通道以扫码登录保存的 `userId` 为准，直接丢弃其他发送者）。
 
-**保活提醒。** 微信 iLink 的 `context_token` 只靠你的入站消息刷新（机器人主动发消息不会续期）。通道会在距离你上次发言满 `10` 小时时发一条保活提醒（到期落在夜间 `22:00`–`07:30` 时提前到 `21:00`）。收到提醒后回一句 `保活`、`续期`、`ping`、`ok`、`收到` 或 `在` 即可刷新窗口；这些保活口令由通道直接秒回「已续期」，不会触发 `wechat.message` 或消耗 Agent Token。
+**保活提醒。** 微信 iLink 的 `context_token` 只靠你的入站消息刷新（机器人主动发消息不会续期），窗口大约 24 小时。通道默认在你上次发言满 `20` 小时时发一条保活提醒。到期时间落在夜间 `22:00`–`07:30` 时，若当天 `07:30` 仍比 24 小时到期早 2 小时以上，就改到早上再提醒；来不及才提前到前一晚 `21:00`。收到提醒后回一句 `保活`、`续期`、`ping`、`ok`、`收到`、`在`，或单独一个句号（`。` 或 `.`）即可刷新窗口；这些保活口令由通道直接秒回「已续期」，不会触发 `wechat.message` 或消耗 Agent Token。
 
 ## 怎么回复
 

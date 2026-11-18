@@ -198,4 +198,8 @@ test("keepalive replies are intercepted without emitting a task, while pending m
   );
   assert.equal(mediaWithOk.keepaliveAck, false);
   assert.equal(mediaWithOk.tasks.length, 1);
+
+  assert.equal(planMessages({ ...session, open: [] }, [text("k5", "。")]).keepaliveAck, true);
+  assert.equal(planMessages({ ...session, open: [] }, [text("k6", ".")]).keepaliveAck, true);
+  assert.equal(planMessages({ ...session, open: [] }, [text("k7", "好的。")]).keepaliveAck, false);
 });

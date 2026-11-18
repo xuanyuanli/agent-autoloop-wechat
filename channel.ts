@@ -10,8 +10,8 @@ import { applyPage, trackDelivery } from "./src/page.ts";
 import {
   KEEPALIVE_ACK_TEXT,
   KEEPALIVE_NUDGE_TEXT,
+  readKeepaliveConfig,
   shouldSendKeepalive,
-  type KeepaliveConfig,
 } from "./src/keepalive.ts";
 import { readSessionAsync, sessionPath, writeSessionAsync, type StoredSession } from "./src/session.ts";
 import { finishLease, leaseExpired, startLease, TICKET_TTL_MS, TYPING_INTERVAL_MS, type TypingLease } from "./src/typing.ts";
@@ -58,20 +58,6 @@ const defaultSleep = (ms: number, signal: AbortSignal) =>
     };
     signal.addEventListener("abort", stop, { once: true });
   });
-
-function readKeepaliveConfig(options: Record<string, unknown>): KeepaliveConfig {
-  return {
-    ...(typeof options.keepaliveHours === "number"
-      ? { hours: options.keepaliveHours }
-      : options.keepaliveHours === false
-        ? { hours: 0 }
-        : {}),
-    ...(typeof options.keepaliveQuietStart === "string" ? { quietStart: options.keepaliveQuietStart } : {}),
-    ...(typeof options.keepaliveQuietEnd === "string" ? { quietEnd: options.keepaliveQuietEnd } : {}),
-    ...(typeof options.keepaliveAdvanceTime === "string" ? { advanceTime: options.keepaliveAdvanceTime } : {}),
-    ...(typeof options.keepaliveTimeZone === "string" ? { timeZone: options.keepaliveTimeZone } : {}),
-  };
-}
 
 export default async function wechat({ hub, options, log, signal }: Context, deps: WechatDeps = {}) {
   const file = typeof options.session === "string" ? options.session : sessionPath(deps.home);

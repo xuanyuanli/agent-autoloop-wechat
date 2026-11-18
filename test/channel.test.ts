@@ -587,10 +587,10 @@ test("channel settles typing even when a delivered notice renders empty (title =
   assert.equal(typingStates.includes(2), true);
 });
 
-test("channel sends a single keepalive nudge after 10h idle and intercepts keepalive reply without emitting a task", async () => {
+test("channel sends a single keepalive nudge after 20h idle and intercepts keepalive reply without emitting a task", async () => {
   const home = mkdtempSync(path.join(tmpdir(), "wx-keepalive-"));
   const sessionFile = path.join(home, "wechat-session.json");
-  const start = Date.parse("2026-11-16T09:00:00+08:00");
+  const start = Date.parse("2026-11-16T12:00:00+08:00");
   await writeSessionAsync(sessionFile, {
     ...baseSession,
     contextToken: "ctx-old",
@@ -600,7 +600,7 @@ test("channel sends a single keepalive nudge after 10h idle and intercepts keepa
   const controller = new AbortController();
   const sentTexts: string[] = [];
   let emittedCount = 0;
-  let currentNow = Date.parse("2026-11-16T19:01:00+08:00");
+  let currentNow = Date.parse("2026-11-17T08:01:00+08:00");
   let keepaliveTick = 0;
   let pollStep = 0;
 
@@ -618,7 +618,7 @@ test("channel sends a single keepalive nudge after 10h idle and intercepts keepa
         while (sentTexts.length < 1 && !controller.signal.aborted) {
           await new Promise((r) => setTimeout(r, 5));
         }
-        currentNow = Date.parse("2026-11-16T19:02:00+08:00");
+        currentNow = Date.parse("2026-11-17T08:02:00+08:00");
         return {
           messages: [
             {
@@ -684,6 +684,6 @@ test("channel sends a single keepalive nudge after 10h idle and intercepts keepa
 
   const saved = await readSessionAsync(sessionFile);
   assert.equal(saved?.contextToken, "ctx-fresh");
-  assert.equal(saved?.lastInboundAt, Date.parse("2026-11-16T19:02:00+08:00"));
+  assert.equal(saved?.lastInboundAt, Date.parse("2026-11-17T08:02:00+08:00"));
   assert.equal(saved?.keepaliveNudgedAt, undefined);
 });
